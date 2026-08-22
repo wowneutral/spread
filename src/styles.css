@@ -548,7 +548,7 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .recent:hover{background:var(--panel-2)}
 .recent .ft{
   font-family:"Spline Sans Mono",monospace; font-size:9px; font-weight:600;
-  letter-spacing:.05em; color:var(--mark-ink); background:var(--manila);
+  letter-spacing:.05em; color:var(--ink); background:var(--manila);
   border:1px solid var(--manila-edge); border-radius:3px; padding:2px 5px;
 }
 .recent .when{margin-left:auto; color:var(--faint); font-size:11px}
@@ -579,6 +579,113 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .tour-arrow.next{font-size:14px}
 .tour-skip{font-size:11.5px; color:var(--faint)}
 .tour-skip:hover{color:var(--ink)}
+
+/* ---------- the flow ---------- */
+.flowview{flex:1; display:flex; min-height:0; gap:12px; padding:2px 12px 4px}
+.flow-side{
+  width:230px; flex:none; background:var(--card); border-radius:12px;
+  box-shadow:var(--shadow-sm); display:flex; flex-direction:column; min-height:0;
+}
+.flow-list{flex:1; overflow-y:auto; padding:8px 10px; min-height:0}
+.flow-list .empty{color:var(--faint); font-size:12px; padding:8px; line-height:1.5}
+.flow-item{display:flex; align-items:center; border-radius:6px}
+.flow-item.on{background:var(--panel-2)}
+.flow-item.on .flow-open{color:var(--ink); font-weight:600}
+.flow-open{
+  flex:1; min-width:0; text-align:left; padding:8px 8px; font-size:12.5px; color:var(--muted);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.flow-open:hover{color:var(--ink)}
+.flow-ev{margin-left:8px; font-size:9.5px; color:var(--faint);
+  font-family:"Spline Sans Mono",monospace; letter-spacing:.05em}
+.flow-del{color:var(--faint); font-size:13px; padding:2px 8px; border-radius:4px}
+.flow-del:hover{color:var(--err); background:var(--panel-2)}
+.flow-new{padding:10px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:6px}
+.flow-newname, .flow-event{
+  font:inherit; font-size:12px; color:var(--ink); background:var(--ground);
+  border:1px solid var(--line); border-radius:6px; padding:6px 8px;
+}
+.flow-add{
+  background:var(--stamp); color:var(--stamp-text); font-size:12px; font-weight:600;
+  padding:7px 10px; border-radius:6px;
+}
+.flow-add:hover{opacity:.88}
+.flow-main{
+  flex:1; min-width:0; background:var(--card); border-radius:12px; box-shadow:var(--shadow-sm);
+  display:flex; flex-direction:column; min-height:0;
+}
+.flow-head{
+  display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border-bottom:1px solid var(--line); flex-wrap:wrap;
+}
+.flow-name{
+  font:inherit; font-size:14px; font-weight:700; color:var(--ink);
+  background:transparent; border:none; outline:none; min-width:120px; max-width:280px;
+}
+.flow-name:focus{border-bottom:1px solid var(--line-strong)}
+.flow-evtag{font-size:10px; font-weight:700; letter-spacing:.08em; color:var(--faint);
+  border:1px solid var(--line); border-radius:3px; padding:2px 6px}
+.flow-tools{display:flex; align-items:center; gap:4px}
+.flow-tools button{
+  padding:4px 10px; border-radius:5px; font-size:12px; color:var(--muted);
+}
+.flow-tools button:hover{background:var(--panel-2); color:var(--ink)}
+.flow-tools .st{text-decoration:line-through}
+.flow-tools .sep{width:1px; height:16px; background:var(--line); margin:0 4px}
+.flow-hint{margin-left:auto; font-size:10.5px; color:var(--faint);
+  font-family:"Spline Sans Mono",monospace}
+.flow-grid{
+  flex:1; overflow:auto; display:grid; align-content:start;
+  gap:0 14px; padding:12px 14px 40vh; min-height:0;
+}
+.fcol-head{
+  position:sticky; top:0; background:var(--card); z-index:2;
+  font-size:11px; font-weight:700; letter-spacing:.08em; color:var(--muted);
+  text-align:center; padding:4px 0 8px; border-bottom:1px solid var(--line-strong);
+  margin-bottom:6px;
+}
+.fcell{
+  min-height:26px; padding:4px 6px 3px; font-size:12.5px; line-height:1.35; color:var(--ink);
+  border-bottom:1px solid var(--line); outline:none; white-space:pre-wrap; word-break:break-word;
+}
+.fcell:focus{background:var(--panel-2); border-bottom-color:var(--mark); border-radius:4px 4px 0 0}
+.fcell:empty::before{content:""; display:inline-block}
+.fcell.b{font-weight:700}
+.fcell.s{text-decoration:line-through; color:var(--muted)}
+.flow-emptystate{padding:60px 40px; max-width:52ch}
+.flow-emptystate h2{font-size:18px; font-weight:800; margin-bottom:10px}
+.flow-emptystate p{font-size:13px; color:var(--muted); line-height:1.6}
+.chip-btn.active{background:var(--mark); color:var(--mark-ink)}
+.chip-btn.active b{color:var(--mark-ink)}
+
+/* ---------- WPM test ---------- */
+.wpm-passage{
+  background:var(--ground); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; font-family:"Tinos",Georgia,serif; font-size:14.5px; line-height:1.6;
+  color:var(--ink); max-height:38vh; overflow-y:auto;
+}
+.wpm-clock{font-family:"Spline Sans Mono",monospace; font-size:20px; font-weight:600;
+  font-variant-numeric:tabular-nums; color:var(--muted)}
+.wpm-big{font-size:22px; font-weight:800; margin-top:12px}
+.wpm-result .note{margin-top:2px}
+
+/* ---------- mobile gate ---------- */
+.mobilegate{
+  min-height:100vh; display:flex; flex-direction:column; justify-content:center;
+  padding:32px 28px; background:var(--ground); color:var(--ink);
+}
+.mobilegate h1{font-weight:900; font-stretch:125%; font-size:38px; margin-bottom:18px}
+.mobilegate h1 .swipe{position:relative; padding:1px 4px 1px 3px; margin-left:1px}
+.mobilegate h1 .swipe::before{content:""; position:absolute; inset:4px -4px 2px 0;
+  background:var(--mark); transform:rotate(-1.2deg); border-radius:2px}
+.mobilegate h1 .swipe span{position:relative; color:var(--mark-ink)}
+.mobilegate h2{font-size:20px; font-weight:800; margin-bottom:10px}
+.mobilegate p{font-size:14.5px; color:var(--muted); line-height:1.6; max-width:36ch; margin-bottom:8px}
+.mobilegate .mg-sub{font-family:"Spline Sans Mono",monospace; font-size:12px; color:var(--faint)}
+.mg-anyway{
+  margin-top:22px; align-self:flex-start; font-size:12.5px; color:var(--faint);
+  text-decoration:underline; text-underline-offset:3px; padding:6px 0;
+}
 
 /* ---------- timer panel (in-app + pop-out) ---------- */
 .timerpanel{

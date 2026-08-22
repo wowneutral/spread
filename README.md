@@ -102,6 +102,10 @@ What's next, in no particular order. Everything stays free.
 - Formatting Spread doesn't model passes through untouched — open and save a file and unknown run properties, tables, section settings, and the rest come out exactly as they went in. Tables are preserved but not yet editable in the editor.
 - Known v0.1 limit: images inside text paragraphs are not preserved when that paragraph is edited. Keep image-heavy files in Word for now.
 
+## Documentation
+
+The full [User Manual](MANUAL.md) covers everything: structure keys, cutting, condense, colors, fonts, read mode, the speech doc, the timer, saving, and every shortcut.
+
 ## Feedback
 
 Bug reports and feature requests: [GitHub issues](https://github.com/wowneutral/spread/issues), or email hello@mitez.org.

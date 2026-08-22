@@ -26,7 +26,8 @@ import { importDocx } from './docx/import';
 import { exportDocx } from './docx/export';
 import { newDocumentParts } from './docx/template';
 import { parseStylesheet, stylesheetCSS } from './docx/stylesheet';
-import { partText, type PartMap } from './docx/zip';
+import { setDocFontInStyles } from './docx/fonts';
+import { partText, setPartText, type PartMap } from './docx/zip';
 import { STYLE, type DocModel, type Paragraph } from './model/types';
 import {
   openViaPicker, saveFile, saveAs, addRecent, listRecents, clearRecents,
@@ -36,6 +37,10 @@ import { readableWords, readableWordsInSelection, secondsAt, fmtTime } from './l
 import { getSettings, updateSettings, onSettingsChange, applyTheme, type Settings } from './lib/settings';
 import { tutorialModel } from './tutorial';
 import { startTour } from './tour';
+import {
+  type Flow, type FlowEvent, FLOW_COLUMNS, newFlow, insertRow, deleteRow,
+  rowIsEmpty, loadFlows, saveFlows, exportFlowJSON, importFlowJSON, appendToColumn,
+} from './flow';
 
 // ---------------------------------------------------------------------------
 // tiny DOM helper
@@ -116,7 +121,8 @@ interface Session {
   parts: PartMap;
   es: EditorSession;
   state: EditorState;
-  css: string;          // per-document stylesheet from the file's styles.xml
+  css: string;             // per-document stylesheet from the file's styles.xml
+  originalStyles: string | null;  // styles.xml as opened, for Restore fonts
   dirty: boolean;
   isSpeech: boolean;
 }
@@ -126,6 +132,7 @@ let activeId: number | null = null;
 let nextSessionId = 1;
 let view: EditorView | null = null;
 let showingHome = true;
+let showingFlow = false;
 let autosaveTimer: number | undefined;
 let readMode = false;
 let plainPasteArmed = false;
@@ -188,7 +195,9 @@ function newSession(name: string, model: DocModel, parts: PartMap, handle: FileS
   const { doc, session: es } = modelToPM(model);
   const s: Session = {
     id: nextSessionId++, name, handle, parts, es,
-    state: makeState(doc), css: docCss(parts), dirty: false, isSpeech: false,
+    state: makeState(doc), css: docCss(parts),
+    originalStyles: partText(parts, 'word/styles.xml'),
+    dirty: false, isSpeech: false,
   };
   sessions.push(s);
   return s;
@@ -295,6 +304,41 @@ async function pastePlain(): Promise<void> {
   toast('Plain paste armed — your next paste lands as plain text.');
 }
 
+/**
+ * Change the document's font for real: rewrites the file's styles so Word,
+ * Verbatim, and CardMirror all see the new face. Run-level font overrides in
+ * the original file are dropped so the switch actually takes everywhere.
+ */
+function setDocumentFont(font: string): void {
+  const s = activeSession();
+  if (!s) return;
+  const styles = partText(s.parts, 'word/styles.xml');
+  if (!styles) return;
+  setPartText(s.parts, 'word/styles.xml', setDocFontInStyles(styles, font));
+  // Strip per-run rFonts pass-throughs — they would override the new font.
+  for (let i = 0; i < s.es.rawRPrs.length; i++) {
+    s.es.rawRPrs[i] = s.es.rawRPrs[i].filter((n) => !('w:rFonts' in n));
+  }
+  s.css = docCss(s.parts);
+  const styleEl = document.getElementById('docstyles');
+  if (styleEl) styleEl.textContent = s.css;
+  s.dirty = true;
+  renderTopbar(); renderStatus();
+  toast(`Document font: ${font}. Saving writes it into the file.`);
+}
+
+function restoreDocumentFonts(): void {
+  const s = activeSession();
+  if (!s?.originalStyles) return;
+  setPartText(s.parts, 'word/styles.xml', s.originalStyles);
+  s.css = docCss(s.parts);
+  const styleEl = document.getElementById('docstyles');
+  if (styleEl) styleEl.textContent = s.css;
+  s.dirty = true;
+  renderTopbar(); renderStatus();
+  toast(`Restored the file's original fonts.`);
+}
+
 /** Save As presets — transforms applied to the model on the way out. */
 function stripForSendDoc(model: DocModel): DocModel {
   const keep = (p: Paragraph) => p.styleId !== STYLE.ANALYTIC && p.styleId !== STYLE.UNDERTAG;
@@ -378,14 +422,15 @@ const root = () => document.getElementById('app')!;
 function renderAll(): void {
   const settings = getSettings();
   applyTheme(settings);
+  const editing = !showingHome && !showingFlow;
   root().replaceChildren(
     renderTopbarEl(),
-    ...(!showingHome ? [renderRibbon()] : []),
-    showingHome ? renderHome() : renderShell(),
+    ...(editing ? [renderRibbon()] : []),
+    showingHome ? renderHome() : showingFlow ? renderFlowView() : renderShell(),
     renderStatusEl(),
     h('div', { class: 'toasts', id: 'toasts' }),
   );
-  if (!showingHome) mountEditor();
+  if (editing) mountEditor();
   renderStatus();
   updateTitle();
 }
@@ -395,13 +440,13 @@ function renderTopbarEl(): HTMLElement {
   const bar = h('div', { class: 'topbar', id: 'topbar' },
     h('div', {
       class: 'wordmark', role: 'button', tabindex: '0', title: 'Home',
-      onclick: () => { syncActiveState(); showingHome = true; renderAll(); },
+      onclick: () => { syncActiveState(); showingHome = true; showingFlow = false; renderAll(); },
     }, 'Sp', h('span', { class: 'swipe' }, h('span', {}, 'read'))),
     h('div', { class: 'doctabs', role: 'tablist' },
       ...sessions.map((sess) => h('button', {
         class: 'doctab', role: 'tab',
-        'aria-selected': sess.id === activeId && !showingHome ? 'true' : 'false',
-        onclick: () => { syncActiveState(); activeId = sess.id; showingHome = false; renderAll(); },
+        'aria-selected': sess.id === activeId && !showingHome && !showingFlow ? 'true' : 'false',
+        onclick: () => { syncActiveState(); activeId = sess.id; showingHome = false; showingFlow = false; renderAll(); },
       },
         h('span', { class: `dot${sess.dirty ? ' dirty' : ''}` }),
         sess.name,
@@ -413,6 +458,10 @@ function renderTopbarEl(): HTMLElement {
       )),
     ),
     h('div', { class: 'topbar-right' },
+      h('button', {
+        class: `chip-btn${showingFlow ? ' active' : ''}`, title: 'The flow — keyboard-first flowing',
+        onclick: () => openFlow(),
+      }, 'Flow'),
       h('a', {
         class: 'icon-btn', title: 'Spread on GitHub', 'aria-label': 'GitHub repository',
         href: REPO, target: '_blank', rel: 'noopener',
@@ -474,14 +523,20 @@ function renderHome(): HTMLElement {
         action('Open…', 'Any Verbatim or Word .docx', `${mod} O`, () => void openFile()),
       ),
       h('div', { class: 'h2-links' },
+        h('button', { onclick: () => openFlow() }, 'The flow'),
+        h('span', { class: 'sep' }, '·'),
         h('button', { onclick: () => openTutorial() }, 'Take the tour'),
         h('span', { class: 'sep' }, '·'),
         h('button', { onclick: () => toggleTimerPanel() }, 'Timer'),
+        h('span', { class: 'sep' }, '·'),
+        h('button', { onclick: () => openWpmTest() }, 'Test your WPM'),
         h('span', { class: 'sep' }, '·'),
         h('button', { onclick: () => { openSettings('shortcuts'); } }, 'Shortcuts'),
       ),
       h('div', { class: 'h2-foot' },
         h('span', {}, 'Made by Armaan Seth'),
+        '·',
+        h('a', { href: `${REPO}/blob/main/MANUAL.md`, target: '_blank', rel: 'noopener' }, 'User Manual'),
         '·',
         h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
         '·',
@@ -645,7 +700,298 @@ function renderOutline(): void {
   );
 }
 
-// --- read mode ---
+// --- the flow ---
+const flowStore = loadFlows();
+let flowSaveTimer: number | undefined;
+
+function activeFlow(): Flow | null {
+  return flowStore.flows.find((f) => f.id === flowStore.activeId) ?? null;
+}
+
+function scheduleFlowSave(): void {
+  clearTimeout(flowSaveTimer);
+  flowSaveTimer = window.setTimeout(() => saveFlows(flowStore), 400);
+}
+
+function openFlow(): void {
+  syncActiveState();
+  showingHome = false;
+  showingFlow = true;
+  renderAll();
+}
+
+function addFlow(name: string, event: FlowEvent): void {
+  const f = newFlow(name || `${event} flow`, event);
+  flowStore.flows.push(f);
+  flowStore.activeId = f.id;
+  saveFlows(flowStore);
+  renderAll();
+}
+
+function focusFlowCell(row: number, col: number): void {
+  const el = document.querySelector<HTMLElement>(`.fcell[data-rc="${row}:${col}"]`);
+  if (!el) return;
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+function caretAtEdge(el: HTMLElement): { start: boolean; end: boolean } {
+  const sel = getSelection();
+  if (!sel || sel.rangeCount === 0) return { start: true, end: true };
+  const r = sel.getRangeAt(0);
+  if (!sel.isCollapsed) return { start: false, end: false };
+  const pre = document.createRange();
+  pre.selectNodeContents(el);
+  pre.setEnd(r.startContainer, r.startOffset);
+  const before = pre.toString().length;
+  const total = el.textContent?.length ?? 0;
+  return { start: before === 0, end: before === total };
+}
+
+function renderFlowGrid(flow: Flow): HTMLElement {
+  const grid = h('div', {
+    class: 'flow-grid',
+    style: `grid-template-columns:repeat(${flow.cols.length}, minmax(190px, 1fr))`,
+  });
+  for (const name of flow.cols) grid.append(h('div', { class: 'fcol-head' }, name));
+  flow.grid.forEach((rowCells, r) => {
+    rowCells.forEach((cell, c) => {
+      const el = h('div', {
+        class: `fcell${cell.bold ? ' b' : ''}${cell.struck ? ' s' : ''}`,
+        contenteditable: 'true',
+        'data-rc': `${r}:${c}`,
+        spellcheck: 'false',
+      }, cell.text);
+      el.oninput = () => { cell.text = el.textContent ?? ''; scheduleFlowSave(); };
+      el.onblur = () => { clearTimeout(flowSaveTimer); saveFlows(flowStore); };
+      el.onkeydown = (e: KeyboardEvent) => {
+        const mod = e.metaKey || e.ctrlKey;
+        if (e.key === 'Enter' && e.altKey) {
+          e.preventDefault(); insertRow(flow, r); scheduleFlowSave(); rerenderFlow(); focusFlowCell(r, c);
+        } else if (e.key === 'Enter' && e.shiftKey) {
+          e.preventDefault(); if (c + 1 < flow.cols.length) focusFlowCell(r, c + 1);
+        } else if (e.key === 'Enter') {
+          e.preventDefault(); insertRow(flow, r + 1); scheduleFlowSave(); rerenderFlow(); focusFlowCell(r + 1, c);
+        } else if (e.key === 'Tab') {
+          e.preventDefault();
+          const nc = c + (e.shiftKey ? -1 : 1);
+          if (nc >= 0 && nc < flow.cols.length) focusFlowCell(r, nc);
+        } else if (e.key === 'ArrowDown') {
+          if (r + 1 < flow.grid.length) { e.preventDefault(); focusFlowCell(r + 1, c); }
+        } else if (e.key === 'ArrowUp') {
+          if (r > 0) { e.preventDefault(); focusFlowCell(r - 1, c); }
+        } else if (e.key === 'ArrowLeft') {
+          if (c > 0 && caretAtEdge(el).start) { e.preventDefault(); focusFlowCell(r, c - 1); }
+        } else if (e.key === 'ArrowRight') {
+          if (c + 1 < flow.cols.length && caretAtEdge(el).end) { e.preventDefault(); focusFlowCell(r, c + 1); }
+        } else if (e.key === 'Backspace' && (el.textContent ?? '') === '' && rowIsEmpty(flow, r) && flow.grid.length > 1) {
+          e.preventDefault(); deleteRow(flow, r); scheduleFlowSave(); rerenderFlow(); focusFlowCell(Math.max(0, r - 1), c);
+        } else if (mod && e.key.toLowerCase() === 'b') {
+          e.preventDefault(); cell.bold = !cell.bold; el.classList.toggle('b', !!cell.bold); saveFlows(flowStore);
+        } else if (mod && e.key.toLowerCase() === 'd') {
+          e.preventDefault(); cell.struck = !cell.struck; el.classList.toggle('s', !!cell.struck); saveFlows(flowStore);
+        }
+      };
+      grid.append(el);
+    });
+  });
+  return grid;
+}
+
+function rerenderFlow(): void {
+  const mainEl = document.getElementById('flowmain');
+  const flow = activeFlow();
+  if (!mainEl || !flow) return;
+  mainEl.querySelector('.flow-grid')?.replaceWith(renderFlowGrid(flow));
+}
+
+function downloadText(name: string, text: string, type = 'application/json'): void {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function renderFlowView(): HTMLElement {
+  const flow = activeFlow();
+
+  const nameInput = h('input', {
+    type: 'text', class: 'flow-newname', placeholder: 'New flow name…', 'aria-label': 'New flow name',
+  });
+  const eventSel = h('select', { class: 'flow-event', 'aria-label': 'Event' },
+    ...(['LD', 'Policy', 'PF'] as FlowEvent[]).map((ev) =>
+      h('option', { value: ev }, `${ev} · ${FLOW_COLUMNS[ev].length} cols`)));
+
+  const side = h('aside', { class: 'flow-side' },
+    h('div', { class: 'rail-top' }, h('span', { class: 'rail-label' }, 'FLOWS')),
+    h('div', { class: 'flow-list' },
+      ...(flowStore.flows.length === 0
+        ? [h('div', { class: 'empty' }, 'One flow per debate. Make one below — it stays on this machine.')]
+        : flowStore.flows.map((f) => h('div', { class: `flow-item${f.id === flowStore.activeId ? ' on' : ''}` },
+            h('button', {
+              class: 'flow-open',
+              onclick: () => { flowStore.activeId = f.id; saveFlows(flowStore); renderAll(); },
+            }, f.name, h('span', { class: 'flow-ev' }, f.event)),
+            h('button', {
+              class: 'flow-del', title: 'Delete flow',
+              onclick: () => {
+                if (!confirm(`Delete "${f.name}"? This cannot be undone.`)) return;
+                flowStore.flows = flowStore.flows.filter((x) => x.id !== f.id);
+                if (flowStore.activeId === f.id) flowStore.activeId = flowStore.flows[0]?.id ?? null;
+                saveFlows(flowStore); renderAll();
+              },
+            }, '×'),
+          ))),
+    ),
+    h('div', { class: 'flow-new' },
+      nameInput, eventSel,
+      h('button', {
+        class: 'flow-add',
+        onclick: () => addFlow(nameInput.value.trim(), eventSel.value as FlowEvent),
+      }, '+ New flow'),
+    ),
+  );
+
+  if (!flow) {
+    return h('div', { class: 'flowview' }, side,
+      h('main', { class: 'flow-main', id: 'flowmain' },
+        h('div', { class: 'flow-emptystate' },
+          h('h2', {}, 'The flow'),
+          h('p', {}, 'Speech columns for your event, argument rows, all keyboard. Enter adds an argument below, Alt-Enter above, Shift-Enter jumps to the response column. Make a flow on the left to start.'),
+        )));
+  }
+
+  const renameInput = h('input', {
+    type: 'text', class: 'flow-name', value: flow.name, 'aria-label': 'Flow name',
+    onchange: () => {
+      flow.name = renameInput.value.trim() || flow.name;
+      renameInput.value = flow.name;
+      saveFlows(flowStore);
+      document.querySelectorAll('.flow-item.on .flow-open').forEach((b) => {
+        (b.childNodes[0] as Text).textContent = flow.name;
+      });
+    },
+  });
+  const importInput = h('input', {
+    type: 'file', accept: '.json,application/json', style: 'display:none',
+    onchange: async () => {
+      const file = (importInput as HTMLInputElement).files?.[0];
+      if (!file) return;
+      const imported = importFlowJSON(await file.text());
+      if (!imported) { toast('That file is not a Spread flow.'); return; }
+      flowStore.flows.push(imported);
+      flowStore.activeId = imported.id;
+      saveFlows(flowStore);
+      renderAll();
+    },
+  });
+
+  const main = h('main', { class: 'flow-main', id: 'flowmain' },
+    h('div', { class: 'flow-head' },
+      renameInput,
+      h('span', { class: 'flow-evtag' }, flow.event),
+      h('div', { class: 'flow-tools' },
+        h('button', { title: 'Bold cell (⌘B)', onclick: () => { /* keyboard-first; hint */ toast('Select a cell and press Mod-B.'); } }, 'B'),
+        h('button', { title: 'Strike cell (⌘D)', class: 'st', onclick: () => toast('Select a cell and press Mod-D.') }, 'S'),
+        h('span', { class: 'sep' }),
+        h('button', { onclick: () => { const f = activeFlow(); if (f) { insertRow(f, f.grid.length); scheduleFlowSave(); rerenderFlow(); } } }, '+ Row'),
+        h('button', { onclick: () => downloadText(`${flow.name.replace(/[^\w.-]+/g, '_')}.flow.json`, exportFlowJSON(flow)) }, 'Export'),
+        h('button', { onclick: () => importInput.click() }, 'Import'),
+        importInput,
+      ),
+      h('span', { class: 'flow-hint' }, 'Enter argument · ⌥Enter above · ⇧Enter response · ⌘B bold · ⌘D strike'),
+    ),
+    renderFlowGrid(flow),
+  );
+  return h('div', { class: 'flowview' }, side, main);
+}
+
+/** Editor → flow: put the current card's tag on the active flow's first column. */
+function sendTagToFlow(): void {
+  if (!view) return;
+  const state = view.state;
+  const doc = state.doc;
+  let index = state.selection.$from.index(0);
+  let tag = '';
+  for (let i = index; i >= 0; i--) {
+    const n = doc.child(i);
+    if (n.type === schema.nodes.heading ||
+        (n.type === schema.nodes.paragraph && n.attrs.kind === 'analytic')) {
+      tag = n.textContent.trim();
+      break;
+    }
+  }
+  if (!tag) { toast('Put the cursor in a card first.'); return; }
+  let flow = activeFlow();
+  if (!flow) {
+    flow = newFlow('Round flow', 'LD');
+    flowStore.flows.push(flow);
+    flowStore.activeId = flow.id;
+  }
+  appendToColumn(flow, 0, tag);
+  saveFlows(flowStore);
+  toast(`On the flow: ${tag.slice(0, 60)}`);
+}
+
+// --- WPM test ---
+const WPM_PASSAGE = 'The strongest version of any argument is the one your opponent would write. Before a tournament, read your own cards the way a judge hears them, out loud and at pace, because the words that look clean on a screen can trip a reader mid sentence. Evidence wins rounds when the highlighted line says exactly what the tag promises, no more and no less. A card that needs three sentences of spin is a card that should have been cut better. Practice the transitions between cards as much as the cards themselves, since hesitation between arguments costs more time than slow reading inside them. Speed matters, but a judge who misses a warrant gives it no weight, so the real target is the fastest rate at which every word still lands.';
+
+let wpmHandle: number | null = null;
+let wpmStart = 0;
+
+function openWpmTest(): void {
+  closeOverlay();
+  const words = (WPM_PASSAGE.match(/[\w'’-]+/g) ?? []).length;
+  const elapsed = h('span', { class: 'wpm-clock' }, '0:00');
+  const result = h('div', { class: 'wpm-result' });
+  const actions = h('div', { class: 'row', style: 'margin-top:10px' });
+  const mainBtn = h('button', { class: 'stamp' }, 'Start reading');
+
+  const stopTimer = () => { if (wpmHandle) { clearInterval(wpmHandle); wpmHandle = null; } };
+
+  mainBtn.onclick = () => {
+    if (!wpmHandle) {
+      wpmStart = Date.now();
+      result.replaceChildren();
+      actions.replaceChildren();
+      wpmHandle = window.setInterval(() => {
+        elapsed.textContent = fmtTime(Math.round((Date.now() - wpmStart) / 1000));
+      }, 250);
+      mainBtn.textContent = 'Done — I read it all';
+    } else {
+      const secs = Math.max(1, (Date.now() - wpmStart) / 1000);
+      stopTimer();
+      const wpm = Math.round(words / (secs / 60));
+      mainBtn.textContent = 'Start reading';
+      elapsed.textContent = fmtTime(Math.round(secs));
+      result.replaceChildren(
+        h('p', { class: 'wpm-big' }, `${wpm} words per minute`),
+        h('p', { class: 'note' }, `${words} words in ${fmtTime(Math.round(secs))}. Debate pace is usually 250–350; conversational is around 150.`),
+      );
+      actions.replaceChildren(
+        h('button', { class: 'opt', onclick: () => { updateSettings({ reader1Wpm: wpm }); toast(`Reader 1 set to ${wpm} wpm`); } }, `Set Reader 1 to ${wpm}`),
+        h('button', { class: 'opt', onclick: () => { updateSettings({ reader2Wpm: wpm }); toast(`Reader 2 set to ${wpm} wpm`); } }, `Set Reader 2 to ${wpm}`),
+      );
+    }
+  };
+
+  showOverlay(h('div', { class: 'modal', role: 'dialog', 'aria-label': 'WPM test' },
+    h('h2', {}, 'How fast do you read?',
+      h('button', { class: 'x', onclick: () => { stopTimer(); closeOverlay(); }, 'aria-label': 'Close' }, '×')),
+    h('p', { class: 'note', style: 'margin-bottom:10px' },
+      'Press Start, read the passage below out loud at your round pace, and press Done the moment you finish. This is a stopwatch and a word count, nothing else — no microphone, no recording, nothing leaves your machine.'),
+    h('div', { class: 'wpm-passage' }, WPM_PASSAGE),
+    h('div', { class: 'row', style: 'align-items:center; gap:12px; margin-top:12px' }, mainBtn, elapsed),
+    result,
+    actions,
+  ));
+}
 function toggleReadMode(): void {
   readMode = !readMode;
   const s = getSettings();
@@ -841,6 +1187,16 @@ function sizeMenu(): HTMLElement {
   }]));
 }
 
+function fontMenu(): HTMLElement {
+  return menuList(BODY_FONTS.map((f) => ({
+    label: f,
+    run: () => setDocumentFont(f),
+  })).concat([{
+    label: `Restore the file's fonts`,
+    run: () => restoreDocumentFonts(),
+  }]));
+}
+
 function docMenu(): HTMLElement {
   const cmd = (c: Command) => () => { if (view) c(view.state, view.dispatch); };
   return menuList([
@@ -865,6 +1221,7 @@ function cardMenu(): HTMLElement {
     { label: 'Copy previous cite', hint: '⌥F8', run: cmd(commands.copyPreviousCite) },
     { label: 'Send to speech doc', hint: '`', run: () => { sendToSpeech('cursor'); } },
     { label: 'Park in dropzone', hint: '⌘`', run: () => { sendToDropzone(); } },
+    { label: 'Send tag to flow', run: () => sendTagToFlow() },
   ]);
 }
 
@@ -914,6 +1271,7 @@ function renderRibbon(): HTMLElement {
       { glyph: 'A', cls: 'fcol', title: 'Font color', run: () => {}, picker: () => swatchGrid('font') },
     ],
     [
+      { label: 'Font ▾', title: 'Document font — changes the file, like changing it in Word', menu: true, picker: () => fontMenu() },
       { glyph: '11', cls: 'fsz', title: 'Font size (pt)', menu: true, picker: () => sizeMenu() },
       { glyph: 'A˄', title: 'Grow font 1pt', run: runCmd(stepFontSize(1, () => 22)) },
       { glyph: 'A˅', title: 'Shrink font 1pt', run: runCmd(stepFontSize(-1, () => 22)) },
@@ -1265,6 +1623,17 @@ function renderStatus(): void {
   if (!el) return;
   const s = activeSession();
   const cfg = getSettings();
+  if (showingFlow) {
+    const f = activeFlow();
+    el.replaceChildren(
+      h('span', { class: 'sigma' }, 'Σ'),
+      h('span', { class: 'mono' }, f
+        ? `Flow: ${f.name} · ${f.grid.length} row${f.grid.length === 1 ? '' : 's'} · saved on this machine`
+        : 'Flow — saved on this machine, exportable as JSON'),
+      h('span', { class: 'grow' }),
+    );
+    return;
+  }
   if (showingHome || !s) {
     el.replaceChildren(
       h('span', { class: 'sigma' }, 'Σ'),
@@ -1374,6 +1743,9 @@ function paletteItems(): PaletteItem[] {
     { label: 'Append to speech doc', hint: '⌥`', run: () => { sendToSpeech('end'); } },
     { label: 'Park in dropzone', hint: '⌘`', run: () => { sendToDropzone(); } },
     { label: 'Mark this tab as speech doc', run: () => { const s = activeSession(); if (s) { for (const o of sessions) o.isSpeech = false; s.isSpeech = true; renderAll(); } } },
+    { label: 'Open the flow', run: () => openFlow() },
+    { label: 'Send tag to flow', run: () => sendTagToFlow() },
+    { label: 'Test your reading speed (WPM)', run: () => openWpmTest() },
     { label: 'Timer panel (speech & prep)', run: () => toggleTimerPanel() },
     { label: 'Pop-out timer', run: () => popoutTimer() },
     { label: 'Take the tour', run: () => openTutorial() },
@@ -1524,6 +1896,13 @@ function openSettings(tab: SettingsTab = 'general'): void {
         (v) => updateSettings({ navDepth: Number(v) as 1 | 2 | 3 | 4 })),
       numRow('Reader 1 (you) — words per minute', s.reader1Wpm, 60, (n) => updateSettings({ reader1Wpm: n })),
       numRow('Reader 2 (partner) — words per minute', s.reader2Wpm, 60, (n) => updateSettings({ reader2Wpm: n })),
+      h('div', { class: 'field' },
+        h('label', {}, 'Not sure of your speed?'),
+        h('div', { class: 'row' },
+          h('button', { class: 'opt', onclick: () => openWpmTest() }, 'Test your WPM'),
+        ),
+        h('p', { class: 'note' }, 'A stopwatch and a word count — no microphone, nothing recorded.'),
+      ),
       numRow('Speech timer length (seconds)', s.speechSeconds, 30, (n) => updateSettings({ speechSeconds: n })),
     ];
   }
@@ -1679,6 +2058,8 @@ function openSettings(tab: SettingsTab = 'general'): void {
     h('div', { class: 'legal' },
       h('span', {}, 'Made by Armaan Seth'),
       '·',
+      h('a', { href: `${REPO}/blob/main/MANUAL.md`, target: '_blank', rel: 'noopener' }, 'User Manual'),
+      '·',
       h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
       '·',
       h('a', { href: `${REPO}/issues`, target: '_blank', rel: 'noopener' }, 'Issues & suggestions'),
@@ -1768,7 +2149,32 @@ const iconHome = () => svgIcon('<path d="M2.5 8L8 2.5 13.5 8"/><path d="M4 7v6.5
 // ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
+/** Phones get a clear answer instead of a broken editor. */
+function isMobileDevice(): boolean {
+  return matchMedia('(pointer: coarse)').matches && Math.min(innerWidth, innerHeight) < 700;
+}
+
+function renderMobileGate(): void {
+  applyTheme(getSettings());
+  root().replaceChildren(
+    h('div', { class: 'mobilegate' },
+      h('h1', {}, 'Sp', h('span', { class: 'swipe' }, h('span', {}, 'read'))),
+      h('h2', {}, 'Sorry — desktop only.'),
+      h('p', {}, 'Spread is a keyboard-first card cutter. F-keys, a full toolbar, real .docx files — none of that works on a phone screen. Open it on a computer or a Chromebook and it will be exactly where you left it.'),
+      h('p', { class: 'mg-sub' }, 'wowneutral.github.io/spread'),
+      h('button', {
+        class: 'mg-anyway',
+        onclick: () => { sessionStorage.setItem('spread-mobile-ok', '1'); location.reload(); },
+      }, 'I know, let me in anyway'),
+    ),
+  );
+}
+
 export function boot(): void {
+  if (isMobileDevice() && !sessionStorage.getItem('spread-mobile-ok')) {
+    renderMobileGate();
+    return;
+  }
   applyTheme(getSettings());
   applyUserStyles();
   onSettingsChange((s) => {
@@ -1795,6 +2201,8 @@ export function boot(): void {
 
   addEventListener('beforeunload', (e) => {
     syncActiveState();
+    clearTimeout(flowSaveTimer);
+    saveFlows(flowStore);
     if (sessions.some((s) => s.dirty && !s.handle)) e.preventDefault();
   });
 
