@@ -6,23 +6,51 @@
  */
 import { Schema } from 'prosemirror-model';
 
+/** Shared layout attrs → inline style (indent in twips; 20 twips = 1pt). */
+function layoutStyle(attrs: { indent: number; align: string | null }): string {
+  let s = '';
+  if (attrs.indent > 0) s += `margin-left:${attrs.indent / 20}pt;`;
+  if (attrs.align) s += `text-align:${attrs.align === 'both' ? 'justify' : attrs.align};`;
+  return s;
+}
+
+const LAYOUT_ATTRS = {
+  indent: { default: 0 },
+  align: { default: null as string | null },
+  pprIdx: { default: -1 },   // index into the session's rawPPr registry
+};
+
 export const schema = new Schema({
   nodes: {
     doc: { content: 'block+' },
     // paragraph is declared first so it is the default block type —
     // pressing Enter after a heading must produce a plain paragraph.
+    // kind: 'p' (Normal), 'analytic', or 'undertag'.
     paragraph: {
       group: 'block',
       content: 'inline*',
-      toDOM() { return ['p', { class: 'cs-p' }, 0]; },
-      parseDOM: [{ tag: 'p' }],
+      attrs: { kind: { default: 'p' }, ...LAYOUT_ATTRS },
+      toDOM(node) {
+        const cls = node.attrs.kind === 'analytic' ? 'cs-analytic'
+          : node.attrs.kind === 'undertag' ? 'cs-undertag' : 'cs-p';
+        const style = layoutStyle(node.attrs as any);
+        return ['p', { class: cls, ...(style ? { style } : {}) }, 0];
+      },
+      parseDOM: [{
+        tag: 'p',
+        getAttrs: (dom: HTMLElement) => ({
+          kind: dom.classList.contains('cs-analytic') ? 'analytic'
+            : dom.classList.contains('cs-undertag') ? 'undertag' : 'p',
+        }),
+      }],
     },
     heading: {
       group: 'block',
       content: 'inline*',
-      attrs: { level: { default: 4 } },
+      attrs: { level: { default: 4 }, ...LAYOUT_ATTRS },
       toDOM(node) {
-        return [`h${node.attrs.level}`, { class: `cs-h cs-h${node.attrs.level}` }, 0];
+        const style = layoutStyle(node.attrs as any);
+        return [`h${node.attrs.level}`, { class: `cs-h cs-h${node.attrs.level}`, ...(style ? { style } : {}) }, 0];
       },
       parseDOM: [1, 2, 3, 4].map((level) => ({ tag: `h${level}`, attrs: { level } })),
     },
@@ -127,6 +155,13 @@ export const schema = new Schema({
       inclusive: false,
       toDOM(mark) { return ['a', { href: mark.attrs.href, class: 'm-link', rel: 'noopener' }, 0]; },
       parseDOM: [{ tag: 'a[href]', getAttrs: (dom: HTMLElement) => ({ href: dom.getAttribute('href') }) }],
+    },
+    /** Opaque pass-through: unmodeled w:rPr props survive editing via the registry. */
+    rawrpr: {
+      attrs: { idx: {} },
+      inclusive: true,
+      toDOM() { return ['span', { class: 'm-rawrpr' }, 0]; },
+      parseDOM: [],
     },
   },
 });

@@ -55,6 +55,10 @@ export interface Paragraph {
   level?: HeadingLevel;
   /** The original paragraph styleId (Heading1..4, Normal, or anything else — kept verbatim). */
   styleId?: string;
+  /** Paragraph alignment (w:jc) when explicitly set on the paragraph. */
+  align?: 'left' | 'center' | 'right' | 'both';
+  /** Left indent (w:ind w:left) in twips, when it is the only indent prop. */
+  indent?: number;
   runs: Run[];
   /** Original <w:pPr> children minus pStyle, re-emitted opaquely on export. */
   rawPPr?: XmlNode[];
@@ -84,6 +88,8 @@ export const STYLE = {
   UNDERLINE: 'StyleUnderline',
   EMPHASIS: 'Emphasis',
   HYPERLINK: 'Hyperlink',
+  ANALYTIC: 'Analytic',
+  UNDERTAG: 'Undertag',
 } as const;
 
 export const HEADING_LEVEL_BY_STYLE: Record<string, HeadingLevel> = {

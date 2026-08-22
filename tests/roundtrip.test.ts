@@ -156,6 +156,36 @@ describe('new documents', () => {
     expect(styles).toContain('Pocket');
   });
 
+  it('Analytic and Undertag styles round-trip, with definitions in styles.xml', () => {
+    const parts = newDocumentParts();
+    const model: DocModel = { blocks: [], rels: new Map() };
+    model.blocks.push(
+      { type: 'p', para: { kind: 'para', styleId: 'Analytic', runs: [{ text: 'Extinction outweighs on timeframe.', marks: {} }] } },
+      { type: 'p', para: { kind: 'para', styleId: 'Undertag', runs: [{ text: 'even under their framework', marks: {} }] } },
+    );
+    const out = exportDocx(model, parts);
+    const back = importDocx(out);
+    expect(normalize(back.model)).toEqual(normalize(model));
+    const p0 = back.model.blocks[0];
+    expect(p0.type === 'p' && p0.para.styleId).toBe('Analytic');
+    const styles = partText(readDocx(out), 'word/styles.xml')!;
+    expect(styles).toContain('w:styleId="Analytic"');
+    expect(styles).toContain('w:styleId="Undertag"');
+  });
+
+  it('alignment (w:jc) and left indent (w:ind) round-trip', () => {
+    const parts = newDocumentParts();
+    const model: DocModel = { blocks: [], rels: new Map() };
+    model.blocks.push(
+      { type: 'p', para: { kind: 'para', styleId: 'Normal', align: 'center', indent: 720, runs: [{ text: 'centered and indented', marks: {} }] } },
+    );
+    const out = exportDocx(model, parts);
+    const back = importDocx(out);
+    const p = back.model.blocks[0];
+    expect(p.type === 'p' && p.para.align).toBe('center');
+    expect(p.type === 'p' && p.para.indent).toBe(720);
+  });
+
   it('background shading (w:shd) survives export and re-import', () => {
     const parts = newDocumentParts();
     const model: DocModel = { blocks: [], rels: new Map() };

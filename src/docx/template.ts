@@ -89,6 +89,44 @@ function charStyle(id: string, name: string, alias: string | null, rPrKids: any[
   return el('w:style', kids, { 'w:type': 'character', 'w:styleId': id });
 }
 
+/** Analytic — standalone analysis: bold 13pt, structurally card-like. */
+function analyticStyle(): any {
+  return el('w:style', [
+    el('w:name', [], { 'w:val': 'Analytic' }),
+    el('w:basedOn', [], { 'w:val': 'Normal' }),
+    el('w:next', [], { 'w:val': 'Normal' }),
+    el('w:uiPriority', [], { 'w:val': '9' }),
+    el('w:qFormat', []),
+    el('w:pPr', [el('w:keepNext', []), el('w:spacing', [], { 'w:before': '120', 'w:after': '0' })]),
+    el('w:rPr', [
+      el('w:b', []), el('w:bCs', []),
+      el('w:sz', [], { 'w:val': '26' }), el('w:szCs', [], { 'w:val': '26' }),
+    ]),
+  ], { 'w:type': 'paragraph', 'w:styleId': 'Analytic' });
+}
+
+/** Undertag — a short annotation under a tag: bold italic 11pt, indented. */
+function undertagStyle(): any {
+  return el('w:style', [
+    el('w:name', [], { 'w:val': 'Undertag' }),
+    el('w:basedOn', [], { 'w:val': 'Normal' }),
+    el('w:next', [], { 'w:val': 'Normal' }),
+    el('w:uiPriority', [], { 'w:val': '9' }),
+    el('w:qFormat', []),
+    el('w:pPr', [el('w:keepNext', []), el('w:ind', [], { 'w:left': '288' }), el('w:spacing', [], { 'w:after': '0' })]),
+    el('w:rPr', [
+      el('w:b', []), el('w:bCs', []), el('w:i', []), el('w:iCs', []),
+      el('w:sz', [], { 'w:val': '22' }), el('w:szCs', [], { 'w:val': '22' }),
+    ]),
+  ], { 'w:type': 'paragraph', 'w:styleId': 'Undertag' });
+}
+
+/** Serialized styles injectable into an existing styles.xml that lacks them. */
+export const EXTRA_STYLE_XML: Record<string, string> = {
+  Analytic: buildXml([analyticStyle()]),
+  Undertag: buildXml([undertagStyle()]),
+};
+
 const STYLES_XML = el('w:styles', [
   el('w:docDefaults', [
     el('w:rPrDefault', [el('w:rPr', [
@@ -135,6 +173,8 @@ const STYLES_XML = el('w:styles', [
     el('w:color', [], { 'w:val': '0563C1', 'w:themeColor': 'hyperlink' }),
     el('w:u', [], { 'w:val': 'single' }),
   ]),
+  analyticStyle(),
+  undertagStyle(),
 ], {
   'xmlns:mc': 'http://schemas.openxmlformats.org/markup-compatibility/2006',
   'xmlns:r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',

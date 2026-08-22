@@ -16,9 +16,13 @@ export function readableWords(doc: PMNode): number {
   let words = 0;
   const M = schema.marks;
   doc.descendants((node) => {
-    if (node.type === schema.nodes.heading) {
+    if (node.type === schema.nodes.heading ||
+        (node.type === schema.nodes.paragraph && node.attrs.kind === 'analytic')) {
       words += countWords(node.textContent);
       return false; // don't double count children
+    }
+    if (node.type === schema.nodes.paragraph && node.attrs.kind === 'undertag') {
+      return false; // undertags are not read aloud
     }
     if (node.isText && node.text) {
       const marks = node.marks;
@@ -41,7 +45,9 @@ export function readableWordsInSelection(doc: PMNode, from: number, to: number):
     if (node.isText && node.text) {
       const start = Math.max(from, pos), end = Math.min(to, pos + node.nodeSize);
       const text = node.text.slice(start - pos, end - pos);
-      const inHeading = parent?.type === schema.nodes.heading;
+      if (parent?.type === schema.nodes.paragraph && parent.attrs.kind === 'undertag') return true;
+      const inHeading = parent?.type === schema.nodes.heading ||
+        (parent?.type === schema.nodes.paragraph && parent.attrs.kind === 'analytic');
       const marks = node.marks;
       const readable = inHeading ||
         M.ustyle.isInSet(marks) || M.udirect.isInSet(marks) ||

@@ -1,23 +1,27 @@
 /**
  * DocModel <-> ProseMirror document conversion. Lossless both ways:
  * raw pass-through blocks become atom nodes holding an index into the
- * session's raw-node registry; run marks map 1:1.
+ * session's raw-node registry; unmodeled paragraph and run properties ride
+ * along the same way (pprIdx attr / rawrpr mark), so editing a file no longer
+ * drops formatting we don't model. Run marks map 1:1.
  */
 import { Node as PMNode, Mark } from 'prosemirror-model';
 import { schema } from './schema';
 import {
-  type DocModel, type BodyBlock, type Paragraph, type Run, type RunMarks,
+  type DocModel, type BodyBlock, type Paragraph, type RunMarks,
   type HighlightColor, STYLE,
 } from '../model/types';
 import type { XmlNode } from '../model/types';
 
 export interface EditorSession {
   rawBlocks: XmlNode[];
+  rawPPrs: XmlNode[][];
+  rawRPrs: XmlNode[][];
   rels: Map<string, string>;
 }
 
 export function modelToPM(model: DocModel): { doc: PMNode; session: EditorSession } {
-  const session: EditorSession = { rawBlocks: [], rels: model.rels };
+  const session: EditorSession = { rawBlocks: [], rawPPrs: [], rawRPrs: [], rels: model.rels };
   const blocks: PMNode[] = [];
   for (const b of model.blocks) {
     if (b.type === 'raw') {
@@ -27,23 +31,37 @@ export function modelToPM(model: DocModel): { doc: PMNode; session: EditorSessio
       const label = name === 'w:tbl' ? 'Table' : name === 'w:sectPr' ? 'Page setup' : 'Preserved content';
       blocks.push(schema.nodes.rawblock.create({ idx, label }));
     } else {
-      blocks.push(paraToPM(b.para));
+      blocks.push(paraToPM(b.para, session));
     }
   }
   if (blocks.length === 0) blocks.push(schema.nodes.paragraph.create());
   return { doc: schema.nodes.doc.create(null, blocks), session };
 }
 
-function paraToPM(p: Paragraph): PMNode {
+function paraToPM(p: Paragraph, session: EditorSession): PMNode {
   const inline: PMNode[] = [];
   for (const run of p.runs) {
     if (run.text === '') continue;
-    inline.push(schema.text(run.text, marksToPM(run.marks)));
+    const marks = marksToPM(run.marks);
+    if (run.rawRPr && run.rawRPr.length) {
+      const idx = session.rawRPrs.length;
+      session.rawRPrs.push(run.rawRPr);
+      marks.push(schema.marks.rawrpr.create({ idx }));
+    }
+    inline.push(schema.text(run.text, marks));
   }
+  let pprIdx = -1;
+  if (p.rawPPr && p.rawPPr.length) {
+    pprIdx = session.rawPPrs.length;
+    session.rawPPrs.push(p.rawPPr);
+  }
+  const layout = { indent: p.indent ?? 0, align: p.align ?? null, pprIdx };
   if (p.kind === 'heading' && p.level) {
-    return schema.nodes.heading.create({ level: p.level }, inline);
+    return schema.nodes.heading.create({ level: p.level, ...layout }, inline);
   }
-  return schema.nodes.paragraph.create(null, inline);
+  const kind = p.styleId === STYLE.ANALYTIC ? 'analytic'
+    : p.styleId === STYLE.UNDERTAG ? 'undertag' : 'p';
+  return schema.nodes.paragraph.create({ kind, ...layout }, inline);
 }
 
 function marksToPM(m: RunMarks): Mark[] {
@@ -78,15 +96,29 @@ export function pmToModel(doc: PMNode, session: EditorSession): DocModel {
       if (raw) blocks.push({ type: 'raw', node: raw });
       return;
     }
+    const isHeading = node.type === schema.nodes.heading;
+    const kind = isHeading ? undefined : node.attrs.kind;
+    const styleId = isHeading ? `Heading${node.attrs.level}`
+      : kind === 'analytic' ? STYLE.ANALYTIC
+      : kind === 'undertag' ? STYLE.UNDERTAG
+      : undefined;
     const para: Paragraph = {
-      kind: node.type === schema.nodes.heading ? 'heading' : 'para',
-      level: node.type === schema.nodes.heading ? node.attrs.level : undefined,
-      styleId: node.type === schema.nodes.heading ? `Heading${node.attrs.level}` : undefined,
+      kind: isHeading ? 'heading' : 'para',
+      level: isHeading ? node.attrs.level : undefined,
+      styleId,
+      align: node.attrs.align ?? undefined,
+      indent: node.attrs.indent > 0 ? node.attrs.indent : undefined,
+      rawPPr: node.attrs.pprIdx >= 0 ? session.rawPPrs[node.attrs.pprIdx] : undefined,
       runs: [],
     };
     node.forEach((inline) => {
       if (!inline.isText || inline.text === undefined) return;
-      para.runs.push({ text: inline.text, marks: pmMarksToModel(inline.marks) });
+      const rawMark = schema.marks.rawrpr.isInSet(inline.marks);
+      para.runs.push({
+        text: inline.text,
+        marks: pmMarksToModel(inline.marks),
+        rawRPr: rawMark ? session.rawRPrs[rawMark.attrs.idx] : undefined,
+      });
     });
     blocks.push({ type: 'p', para });
   });
@@ -113,6 +145,7 @@ function pmMarksToModel(marks: readonly Mark[]): RunMarks {
       case M.fcolor: out.color = mark.attrs.hex; break;
       case M.vert: out.vertAlign = mark.attrs.v; break;
       case M.link: out.link = mark.attrs.href; break;
+      case M.rawrpr: break; // handled at the run level via the registry
     }
   }
   return out;

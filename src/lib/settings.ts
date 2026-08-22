@@ -3,14 +3,33 @@
  * ever written into a document file.
  */
 
+/** Display-only per-style size overrides (pt). Empty = the file's own size. */
+export interface StyleSizes {
+  normal?: number; pocket?: number; hat?: number; block?: number; tag?: number;
+  analytic?: number; undertag?: number; cite?: number; underline?: number; emphasis?: number;
+}
+
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   docView: 'clean' | 'faithful';
-  toolbar: 'contextual' | 'full';   // full top bar (default, like Verbatim/CardMirror) or slim contextual
   docFollowsTheme: boolean;         // dark mode darkens the document too (off = paper stays white)
+  bodyFont: string;                 // '' = the file's own font
+  styleSizes: StyleSizes;           // display-only pt overrides per style
+  analyticColor: string;            // display color for Analytic text
+  undertagColor: string;            // display color for Undertag text
+  maxWidthOn: boolean;              // cap the text column width
+  maxWidthPx: number;
+  autosave: boolean;                // autosave to the opened file (FSA)
+  prefixPresets: boolean;           // Save As presets prepend the prefixes below
+  sendPrefix: string;
+  readPrefix: string;
+  condenseOnPaste: boolean;         // run condense on F2-pasted text
   spellcheck: boolean;              // browser spellcheck in the editor (off: evidence trips it)
   highlightColor: string;           // active F11 color (Word highlight name)
   shadeHex: string;                 // Mod-F11 background shading fill (RRGGBB)
+  condenseIntegrity: boolean;       // F3 keeps paragraph breaks
+  condensePilcrows: boolean;        // ...marked with small ¶ when merging
+  shrinkProtections: string;        // comma-separated strings Shrink keeps full-size
   reader1Wpm: number;
   reader2Wpm: number;
   showReadChips: boolean;           // per-card read time chips (off by default)
@@ -23,11 +42,24 @@ export interface Settings {
 export const DEFAULTS: Settings = {
   theme: 'system',
   docView: 'faithful',
-  toolbar: 'full',
   docFollowsTheme: false,
+  bodyFont: '',
+  styleSizes: {},
+  analyticColor: '#1F3864',
+  undertagColor: '#385623',
+  maxWidthOn: false,
+  maxWidthPx: 900,
+  autosave: true,
+  prefixPresets: true,
+  sendPrefix: 'SEND_',
+  readPrefix: 'READ_',
+  condenseOnPaste: false,
   spellcheck: false,
   highlightColor: 'cyan',
   shadeHex: 'FFE9A8',
+  condenseIntegrity: true,
+  condensePilcrows: true,
+  shrinkProtections: '',
   reader1Wpm: 270,
   reader2Wpm: 240,
   showReadChips: false,

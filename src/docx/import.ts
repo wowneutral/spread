@@ -75,12 +75,26 @@ function parseRels(xml: string | null): Map<string, string> {
 function importParagraph(pNode: any, rels: Map<string, string>, mkId: () => string): Paragraph {
   const pPr = child(pNode, 'w:pPr');
   let styleId: string | undefined;
+  let align: Paragraph['align'];
+  let indent: number | undefined;
   const rawPPr: any[] = [];
   if (pPr) {
     for (const c of children(pPr)) {
-      if (nodeName(c) === 'w:pStyle') styleId = attrs(c)['w:val'];
-      else if (nodeName(c) === 'w:rPr') { /* paragraph-mark run props */ rawPPr.push(c); }
-      else rawPPr.push(c);
+      const name = nodeName(c);
+      if (name === 'w:pStyle') styleId = attrs(c)['w:val'];
+      else if (name === 'w:jc') {
+        const v = attrs(c)['w:val'];
+        if (v === 'left' || v === 'center' || v === 'right' || v === 'both') align = v;
+        else rawPPr.push(c);
+      } else if (name === 'w:ind') {
+        // Model the plain left indent; anything richer stays raw.
+        const a = attrs(c);
+        const keys = Object.keys(a);
+        const left = a['w:left'] ?? a['w:start'];
+        const onlyLeft = keys.every((k) => k === 'w:left' || k === 'w:start');
+        if (left !== undefined && onlyLeft) indent = Number(left);
+        else rawPPr.push(c);
+      } else rawPPr.push(c);
     }
   }
   const level = styleId ? HEADING_LEVEL_BY_STYLE[styleId] : undefined;
@@ -88,6 +102,8 @@ function importParagraph(pNode: any, rels: Map<string, string>, mkId: () => stri
     kind: level ? 'heading' : 'para',
     level,
     styleId,
+    align,
+    indent,
     runs: [],
     rawPPr: rawPPr.length ? rawPPr : undefined,
     id: mkId(),

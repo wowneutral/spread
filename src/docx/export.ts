@@ -8,11 +8,12 @@
  * a canonical minimal Verbatim package generated in template.ts.
  */
 import { buildXml, el, textNode, XML_DECL, ATTR } from './xml';
-import { writeDocx, setPartText, type PartMap } from './zip';
+import { writeDocx, setPartText, partText, type PartMap } from './zip';
 import {
   type DocModel, type BodyBlock, type Paragraph, type Run,
-  STYLE_BY_HEADING_LEVEL,
+  STYLE_BY_HEADING_LEVEL, STYLE,
 } from '../model/types';
+import { EXTRA_STYLE_XML } from './template';
 
 /** Namespaces Word emits on w:document; we mirror the common set. */
 const DOC_ATTRS: Record<string, string> = {
@@ -50,7 +51,32 @@ export function exportDocx(model: DocModel, parts: PartMap, opts: ExportOptions 
   const doc = el('w:document', [el('w:body', bodyKids)], DOC_ATTRS);
   const xml = XML_DECL + buildXml([doc]);
   setPartText(parts, 'word/document.xml', xml);
+  ensureExtraStyles(model, parts);
   return writeDocx(parts);
+}
+
+/**
+ * If the document uses the Analytic / Undertag styles but the package's
+ * styles.xml (from a stock Verbatim template) doesn't define them, inject the
+ * definitions so Word renders them. Files that never use them are untouched —
+ * styles.xml stays byte-identical.
+ */
+function ensureExtraStyles(model: DocModel, parts: PartMap): void {
+  const used = new Set<string>();
+  for (const b of model.blocks) {
+    if (b.type === 'p' && b.para.styleId) used.add(b.para.styleId);
+  }
+  const need = [STYLE.ANALYTIC, STYLE.UNDERTAG].filter((id) => used.has(id));
+  if (need.length === 0) return;
+  const stylesXml = partText(parts, 'word/styles.xml');
+  if (!stylesXml) return;
+  let out = stylesXml;
+  for (const id of need) {
+    if (out.includes(`w:styleId="${id}"`)) continue;
+    const frag = EXTRA_STYLE_XML[id];
+    if (frag) out = out.replace('</w:styles>', `${frag}</w:styles>`);
+  }
+  if (out !== stylesXml) setPartText(parts, 'word/styles.xml', out);
 }
 
 function invertRels(rels: Map<string, string>): Map<string, string> {
@@ -66,6 +92,8 @@ function exportParagraph(p: Paragraph, linkRels: Map<string, string>): any {
     ? STYLE_BY_HEADING_LEVEL[p.level]
     : p.styleId && p.styleId !== 'Normal' ? p.styleId : undefined;
   if (styleId) pPrKids.push(el('w:pStyle', [], { 'w:val': styleId }));
+  if (p.indent !== undefined && p.indent > 0) pPrKids.push(el('w:ind', [], { 'w:left': String(p.indent) }));
+  if (p.align) pPrKids.push(el('w:jc', [], { 'w:val': p.align }));
   if (p.rawPPr) pPrKids.push(...p.rawPPr);
   if (pPrKids.length) kids.push(el('w:pPr', pPrKids));
 

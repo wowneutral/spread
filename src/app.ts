@@ -2,26 +2,32 @@
  * Spread — application shell.
  * Free, MIT-licensed debate card-cutting editor. Reads/writes Verbatim .docx.
  *
- * Layout: topbar (tabs) · [ribbon if full-toolbar mode] · outline | editor |
- * speech pane · status bar. Home screen for open/new/recents. Command palette
- * (Mod-K) reaches every command; a contextual toolbar appears on selection.
+ * Layout: topbar (tabs) · full ribbon (every command, always visible) ·
+ * outline | editor | speech pane · status bar. Home screen for open/new/
+ * recents. Command palette (Mod-K) reaches every command by name.
+ * The document renders with the opened file's own styles (see stylesheet.ts).
  */
-import { EditorState, TextSelection, Plugin } from 'prosemirror-state';
+import { EditorState, TextSelection, type Command } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import { history, undo as undoCmd, redo as redoCmd } from 'prosemirror-history';
 import { keymap } from 'prosemirror-keymap';
 import { baseKeymap } from 'prosemirror-commands';
-import type { Node as PMNode } from 'prosemirror-model';
+import { Fragment, type Node as PMNode } from 'prosemirror-model';
 
 import { schema } from './editor/schema';
 import { buildKeymap } from './editor/keymap';
-import { commands, toggleHighlight, toggleShade, selectCard } from './editor/commands';
+import {
+  commands, toggleHighlight, toggleShade, selectCard, toggleMarker, cardBodyRange,
+  setFontSize, stepFontSize, standardizeHighlights, removeAllOf,
+  highlightToBackground, backgroundToHighlight, condenseCmd,
+} from './editor/commands';
 import { modelToPM, pmToModel, type EditorSession } from './editor/convert';
 import { importDocx } from './docx/import';
 import { exportDocx } from './docx/export';
 import { newDocumentParts } from './docx/template';
-import type { PartMap } from './docx/zip';
-import type { DocModel } from './model/types';
+import { parseStylesheet, stylesheetCSS } from './docx/stylesheet';
+import { partText, type PartMap } from './docx/zip';
+import { STYLE, type DocModel, type Paragraph } from './model/types';
 import {
   openViaPicker, saveFile, saveAs, addRecent, listRecents, clearRecents,
   openRecent, hasFSA, type RecentEntry,
@@ -53,7 +59,52 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-const HL_COLORS = ['yellow', 'cyan', 'green', 'magenta', 'blue', 'red', 'darkYellow', 'darkCyan', 'darkGreen', 'lightGray'];
+/** Word's full 15-color highlight palette (F11 order: brights, then darks). */
+const HL_COLORS = ['yellow', 'cyan', 'green', 'magenta', 'blue', 'red',
+  'darkYellow', 'darkCyan', 'darkGreen', 'darkMagenta', 'darkBlue', 'darkRed',
+  'darkGray', 'lightGray', 'black'];
+const SHADE_HEXES = ['FFFF00', 'FFE9A8', 'C7F0FF', 'D8F5C9', 'FFD9DE', 'E8DAFF', 'D9D9D9', 'BFBFBF'];
+const FONT_HEXES = ['auto', 'FF0000', 'C00000', '0070C0', '00B050', '7030A0', 'ED7D31', '808080'];
+const FONT_SIZES = [8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 26];
+const BODY_FONTS = ['Calibri', 'Arial', 'Times New Roman', 'Cambria', 'Georgia', 'Verdana', 'Tahoma', 'Helvetica'];
+
+/** Display-only overrides from Settings, layered over the file's stylesheet. */
+function userCSS(s: Settings): string {
+  const rules: string[] = [];
+  if (s.bodyFont) {
+    rules.push(`.docwrap:not(.clean) #docmount .ProseMirror{font-family:"${s.bodyFont}",Arial,sans-serif !important}`);
+  }
+  if (s.maxWidthOn) {
+    rules.push(`#docmount .ProseMirror{max-width:${Math.max(400, s.maxWidthPx)}px;margin:0 auto}`);
+  }
+  const sz = s.styleSizes;
+  const size = (sel: string, pt?: number) => {
+    if (pt && pt > 0) rules.push(`.docwrap:not(.clean) #docmount ${sel}{font-size:${pt}pt !important}`);
+  };
+  size('.cs-p', sz.normal); size('.cs-h1', sz.pocket); size('.cs-h2', sz.hat);
+  size('.cs-h3', sz.block); size('.cs-h4', sz.tag); size('.cs-analytic', sz.analytic);
+  size('.cs-undertag', sz.undertag); size('.m-cite', sz.cite);
+  size('.m-ustyle', sz.underline); size('.m-emph', sz.emphasis);
+  rules.push(`.docwrap .cs-analytic{color:${s.analyticColor}}`);
+  rules.push(`.docwrap .cs-undertag{color:${s.undertagColor}}`);
+  return rules.join('\n');
+}
+
+function applyUserStyles(): void {
+  document.getElementById('userstyles')?.remove();
+  const el = document.createElement('style');
+  el.id = 'userstyles';
+  el.textContent = userCSS(getSettings());
+  document.head.append(el);
+}
+
+const REPO = 'https://github.com/wowneutral/spread';
+
+/** The browser tab reads as the open document, like any editor. */
+function updateTitle(): void {
+  const s = activeSession();
+  document.title = showingHome || !s ? 'Spread' : `${s.name.replace(/\.docx$/i, '')} — Spread`;
+}
 
 // ---------------------------------------------------------------------------
 // sessions
@@ -65,6 +116,7 @@ interface Session {
   parts: PartMap;
   es: EditorSession;
   state: EditorState;
+  css: string;          // per-document stylesheet from the file's styles.xml
   dirty: boolean;
   isSpeech: boolean;
 }
@@ -76,14 +128,10 @@ let view: EditorView | null = null;
 let showingHome = true;
 let autosaveTimer: number | undefined;
 let readMode = false;
+let plainPasteArmed = false;
 
-const REPO = 'https://github.com/wowneutral/spread';
-
-/** The browser tab reads as the open document, like any editor. */
-function updateTitle(): void {
-  const s = activeSession();
-  document.title = showingHome || !s ? 'Spread' : `${s.name.replace(/\.docx$/i, '')} — Spread`;
-}
+/** Dropzone shelf: parked card fragments (in-memory, this session). */
+const dropzone: { label: string; json: any }[] = [];
 
 function activeSession(): Session | null {
   return sessions.find((s) => s.id === activeId) ?? null;
@@ -92,40 +140,63 @@ function speechSession(): Session | null {
   return sessions.find((s) => s.isSpeech) ?? null;
 }
 
+function condenseModeFromSettings(): 'merge' | 'pilcrows' | 'whitespace' {
+  const s = getSettings();
+  if (!s.condenseIntegrity) return 'merge';
+  return s.condensePilcrows ? 'pilcrows' : 'whitespace';
+}
+
+function shrinkProtectionList(): string[] {
+  return getSettings().shrinkProtections.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+function nowShort(): string {
+  const d = new Date();
+  return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function makeState(doc: PMNode): EditorState {
   return EditorState.create({
     doc,
     plugins: [
+      keymap({
+        F2: () => { void pastePlain(); return true; },
+        'Mod-Shift-d': (state, dispatch) => toggleMarker(nowShort)(state, dispatch),
+        '`': () => sendToSpeech('cursor'),
+        'Alt-`': () => sendToSpeech('end'),
+        'Mod-`': () => sendToDropzone(),
+      }),
       buildKeymap({
         getHighlightColor: () => getSettings().highlightColor,
         getShadeHex: () => getSettings().shadeHex,
+        getCondenseMode: condenseModeFromSettings,
+        getShrinkProtections: shrinkProtectionList,
       }),
       history(),
       keymap(baseKeymap),
-      new Plugin({
-        props: {
-          handleDOMEvents: {
-            focus: () => { hideCtx(); return false; },
-          },
-        },
-      }),
     ],
   });
+}
+
+function docCss(parts: PartMap): string {
+  return stylesheetCSS(parseStylesheet(partText(parts, 'word/styles.xml')), '#docmount');
 }
 
 function newSession(name: string, model: DocModel, parts: PartMap, handle: FileSystemFileHandle | null): Session {
   const { doc, session: es } = modelToPM(model);
   const s: Session = {
     id: nextSessionId++, name, handle, parts, es,
-    state: makeState(doc), dirty: false, isSpeech: false,
+    state: makeState(doc), css: docCss(parts), dirty: false, isSpeech: false,
   };
   sessions.push(s);
   return s;
 }
 
-function sessionBytes(s: Session): Uint8Array {
+function sessionBytes(s: Session, transform?: (m: DocModel) => DocModel): Uint8Array {
   const state = s.id === activeId && view ? view.state : s.state;
-  return exportDocx(pmToModel(state.doc, s.es), s.parts);
+  let model = pmToModel(state.doc, s.es);
+  if (transform) model = transform(model);
+  return exportDocx(model, s.parts);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +268,7 @@ function syncActiveState(): void {
 
 function scheduleAutosave(): void {
   const s = activeSession();
-  if (!s?.handle) return;
+  if (!s?.handle || !getSettings().autosave) return;
   clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(() => {
     const cur = activeSession();
@@ -205,28 +276,96 @@ function scheduleAutosave(): void {
   }, 5000);
 }
 
+async function pastePlain(): Promise<void> {
+  if (!view) return;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      view.dispatch(view.state.tr.insertText(text).scrollIntoView());
+      if (getSettings().condenseOnPaste) {
+        condenseCmd(condenseModeFromSettings())(view.state, view.dispatch);
+      }
+      view.focus();
+      return;
+    }
+  } catch { /* clipboard permission refused — arm instead */ }
+  plainPasteArmed = true;
+  toast('Plain paste armed — your next paste lands as plain text.');
+}
+
+/** Save As presets — transforms applied to the model on the way out. */
+function stripForSendDoc(model: DocModel): DocModel {
+  const keep = (p: Paragraph) => p.styleId !== STYLE.ANALYTIC && p.styleId !== STYLE.UNDERTAG;
+  return { ...model, blocks: model.blocks.filter((b) => b.type !== 'p' || keep(b.para)) };
+}
+
+function stripForReadDoc(model: DocModel): DocModel {
+  const blocks: DocModel['blocks'] = [];
+  for (const b of model.blocks) {
+    if (b.type !== 'p') { blocks.push(b); continue; }
+    const p = b.para;
+    if (p.kind === 'heading' || p.styleId === STYLE.ANALYTIC) { blocks.push(b); continue; }
+    if (p.styleId === STYLE.UNDERTAG) continue;
+    const runs = p.runs.filter((r) =>
+      (r.marks.highlight && r.marks.highlight !== 'none') || r.marks.charStyle === STYLE.CITE);
+    if (runs.length > 0) blocks.push({ type: 'p', para: { ...p, runs } });
+  }
+  return { ...model, blocks };
+}
+
 // ---------------------------------------------------------------------------
-// send to speech
+// send to speech + dropzone
 // ---------------------------------------------------------------------------
-function sendToSpeech(): void {
-  const from = activeSession();
-  const to = speechSession();
-  if (!from || !view) return;
-  if (!to) { toast('No speech doc yet — mark a tab as speech (palette: "Mark as speech doc")'); return; }
-  if (to.id === from.id) { toast('This tab IS the speech doc'); return; }
-  // Select the card around the cursor if selection is empty.
+function currentCardSlice(): { fragment: Fragment; label: string } | null {
+  if (!view) return null;
   let state = view.state;
   if (state.selection.empty) {
     selectCard(state, (tr) => { view!.dispatch(tr); });
     state = view.state;
   }
   const slice = state.selection.content();
-  const insertPos = to.state.doc.content.size;
-  const tr = to.state.tr.insert(insertPos, slice.content);
+  if (slice.content.size === 0) return null;
+  let label = '';
+  slice.content.forEach((n) => { if (!label && n.textContent) label = n.textContent.slice(0, 80); });
+  return { fragment: slice.content, label: label || '(card)' };
+}
+
+function sendToSpeech(where: 'cursor' | 'end'): boolean {
+  const from = activeSession();
+  const to = speechSession();
+  if (!from || !view) return false;
+  if (!to) { toast('No speech doc yet — mark a tab as the speech doc (palette: "Mark as speech doc").'); return true; }
+  if (to.id === from.id) { toast('This tab IS the speech doc'); return true; }
+  const card = currentCardSlice();
+  if (!card) return true;
+  const end = to.state.doc.content.size;
+  const pos = where === 'cursor'
+    ? Math.min(to.state.selection.head ?? end, end)
+    : end;
+  const tr = to.state.tr.insert(pos, card.fragment);
   to.state = to.state.apply(tr);
   to.dirty = true;
   renderSpeech();
-  toast('Sent to speech doc');
+  toast(where === 'end' ? 'Appended to speech doc' : 'Sent to speech doc');
+  return true;
+}
+
+function sendToDropzone(): boolean {
+  const card = currentCardSlice();
+  if (!card) return true;
+  dropzone.push({ label: card.label, json: card.fragment.toJSON() });
+  renderSpeech();
+  toast('Parked in the dropzone');
+  return true;
+}
+
+function insertFromDropzone(i: number): void {
+  const item = dropzone[i];
+  if (!item || !view) return;
+  const frag = Fragment.fromJSON(schema, item.json);
+  const pos = view.state.selection.head;
+  view.dispatch(view.state.tr.insert(pos, frag).scrollIntoView());
+  view.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +378,7 @@ function renderAll(): void {
   applyTheme(settings);
   root().replaceChildren(
     renderTopbarEl(),
-    ...(settings.toolbar === 'full' && !showingHome ? [renderRibbon()] : []),
+    ...(!showingHome ? [renderRibbon()] : []),
     showingHome ? renderHome() : renderShell(),
     renderStatusEl(),
     h('div', { class: 'toasts', id: 'toasts' }),
@@ -306,74 +445,56 @@ function closeSession(id: number): void {
   renderAll();
 }
 
-// --- home ---
+// --- home (split layout: actions left, recents as the main surface) ---
 function renderHome(): HTMLElement {
-  const recentsList = h('div', { id: 'recents' }, h('div', { class: 'empty' }, 'Loading…'));
+  const recentsList = h('div', { class: 'h2-recents', id: 'recents' }, h('div', { class: 'empty' }, 'Loading…'));
   void (async () => {
-    const recents = await listRecents();
+    const recents = await listRecents(14);
     recentsList.replaceChildren(
       ...(recents.length === 0
         ? [h('div', { class: 'empty' }, hasFSA
-            ? 'Files you open will show up here. Spread asks your browser for permission before reading or editing anything.'
+            ? 'Files you open land here. Spread asks your browser for permission before reading or editing anything.'
             : 'Recents need the File System Access API (Chrome/Edge). You can still open and download files.')]
         : recents.map((r) => renderRecent(r))),
     );
   })();
-  return h('section', { class: 'home' },
-    h('div', { class: 'home-inner' },
+  const action = (title: string, sub: string, kbd: string | null, run: () => void, primary = false) =>
+    h('button', { class: `h2-action${primary ? ' primary' : ''}`, onclick: run },
+      h('span', { class: 'h2-a-main' }, h('b', {}, title), h('span', {}, sub)),
+      kbd ? h('kbd', {}, kbd) : null);
+  const mod = navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
+  return h('section', { class: 'home2' },
+    h('div', { class: 'h2-left' },
       h('h1', {}, 'Sp', h('span', { class: 'swipe' }, h('span', {}, 'read'))),
-      h('p', { class: 'sub' }, 'Open a document to start, or pick up where you left off.'),
-      h('div', { class: 'badges' },
-        h('span', { class: 'badge' }, 'Free forever'),
-        h('span', { class: 'badge' }, 'MIT open source'),
-        h('span', { class: 'badge' }, 'Verbatim-compatible .docx'),
+      h('p', { class: 'h2-sub' }, 'Cut cards. Save real Verbatim files. Nothing leaves your machine.'),
+      h('div', { class: 'h2-actions' },
+        action('New document', 'A fresh Verbatim-styled file', null, () => newDocument(false), true),
+        action('New speech document', 'Starts marked as the speech doc', null, () => newDocument(true)),
+        action('Open…', 'Any Verbatim or Word .docx', `${mod} O`, () => void openFile()),
       ),
-      h('div', { class: 'home-primary' },
-        h('button', { class: 'hcard primary', onclick: () => newDocument(false) },
-          h('h3', {}, 'New document'), h('p', {}, 'Create a new Verbatim-styled document.')),
-        h('button', { class: 'hcard', onclick: () => newDocument(true) },
-          h('h3', {}, 'New speech document'), h('p', {}, 'Create a new document and mark it as the speech doc.')),
-        h('button', { class: 'hcard', onclick: () => void openFile() },
-          h('h3', {}, 'Open…'), h('p', {}, 'Browse for a Verbatim or Word .docx file.')),
+      h('div', { class: 'h2-links' },
+        h('button', { onclick: () => openTutorial() }, 'Take the tour'),
+        h('span', { class: 'sep' }, '·'),
+        h('button', { onclick: () => popoutTimer() }, 'Pop-out timer'),
+        h('span', { class: 'sep' }, '·'),
+        h('button', { onclick: () => { openSettings('shortcuts'); } }, 'Shortcuts'),
       ),
-      h('div', { class: 'recents' },
-        h('div', { class: 'home-row' },
-          h('span', { class: 'home-label' }, 'RECENT'),
-          h('button', { class: 'home-clear', onclick: async () => { await clearRecents(); renderAll(); } }, 'Clear'),
-        ),
-        recentsList,
-      ),
-      h('div', { class: 'home-grid' },
-        h('div', {},
-          h('span', { class: 'home-label' }, 'LEARN'),
-          h('button', { class: 'hcard', onclick: () => openTutorial() },
-            h('h3', {}, 'Take the tour'),
-            h('p', {}, 'Two minutes of popups on a practice file. It cuts a card in front of you.')),
-        ),
-        h('div', {},
-          h('span', { class: 'home-label' }, 'TOOLS'),
-          h('button', { class: 'hcard', onclick: () => popoutTimer() },
-            h('h3', {}, 'Pop-out timer'),
-            h('p', {}, 'A floating speech & prep timer in its own window.')),
-        ),
-        h('div', {},
-          h('span', { class: 'home-label' }, 'COMING'),
-          h('button', { class: 'hcard', onclick: () => toast('On the roadmap — follow the repo for updates.') },
-            h('h3', {}, 'Card passing ', h('span', { class: 'soon' }, 'SOON')),
-            h('p', {}, 'Serverless card sharing between teammates, free forever.')),
-        ),
-      ),
-      h('div', { class: 'home-foot' },
-        h('span', {}, 'Spread is free and open source. Your files never leave your computer.'),
-        h('span', { class: 'grow', style: 'flex:1' }),
+      h('div', { class: 'h2-foot' },
         h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
+        '·',
+        h('a', { href: `${REPO}/releases`, target: '_blank', rel: 'noopener' }, 'Mac & Windows apps'),
         '·',
         h('a', { href: `${REPO}/blob/main/PRIVACY.md`, target: '_blank', rel: 'noopener' }, 'Privacy'),
         '·',
         h('a', { href: `${REPO}/blob/main/TERMS.md`, target: '_blank', rel: 'noopener' }, 'Terms'),
-        '·',
-        h('a', { href: `${REPO}/releases`, target: '_blank', rel: 'noopener' }, 'Mac & Windows apps'),
       ),
+    ),
+    h('div', { class: 'h2-right' },
+      h('div', { class: 'h2-r-head' },
+        h('span', { class: 'home-label' }, 'RECENT'),
+        h('button', { class: 'home-clear', onclick: async () => { await clearRecents(); renderAll(); } }, 'Clear'),
+      ),
+      recentsList,
     ),
   );
 }
@@ -410,7 +531,6 @@ function renderShell(): HTMLElement {
     h('nav', { class: 'outline', 'aria-label': 'Document outline', id: 'outline' }),
     h('main', { class: docwrapClass(s), id: 'docwrap' },
       h('div', { id: 'docmount', class: 'doczoom' }),
-      h('div', { class: 'ctxbar', id: 'ctxbar', hidden: true }),
     ),
     h('aside', { class: 'speech', 'aria-label': 'Speech document', id: 'speechpane' }),
   );
@@ -421,10 +541,22 @@ function mountEditor(): void {
   const s = activeSession();
   if (!mount || !s) return;
   view?.destroy();
+  document.getElementById('docstyles')?.remove();
+  const styleEl = document.createElement('style');
+  styleEl.id = 'docstyles';
+  styleEl.textContent = s.css;
+  document.head.append(styleEl);
   view = new EditorView(mount, {
     state: s.state,
     editable: () => !readMode,
     attributes: () => ({ spellcheck: String(getSettings().spellcheck) }),
+    handlePaste(v, event) {
+      if (!plainPasteArmed) return false;
+      plainPasteArmed = false;
+      const text = event.clipboardData?.getData('text/plain') ?? '';
+      if (text) v.dispatch(v.state.tr.insertText(text).scrollIntoView());
+      return true;
+    },
     dispatchTransaction(tr) {
       if (!view) return;
       const newState = view.state.apply(tr);
@@ -435,24 +567,28 @@ function mountEditor(): void {
         if (tr.docChanged) { sess.dirty = true; scheduleAutosave(); renderOutline(); }
       }
       renderStatus();
-      updateCtx();
+      updateRibbonState();
       renderTopbarDirtyDots();
     },
   });
   applyZoom();
   renderOutline();
   renderSpeech();
-  updateCtx();
+  updateRibbonState();
 }
 
 function renderTopbarDirtyDots(): void {
-  // cheap: re-render tabs only when dirty flags may have flipped
   renderTopbar();
 }
 
 function applyZoom(): void {
   const mount = document.getElementById('docmount') as HTMLElement | null;
   if (mount) (mount.style as any).zoom = `${getSettings().zoom}%`;
+}
+
+function zoomBy(delta: number): void {
+  updateSettings({ zoom: Math.max(50, Math.min(300, getSettings().zoom + delta)) });
+  applyZoom(); renderStatus();
 }
 
 // --- outline ---
@@ -462,10 +598,12 @@ function renderOutline(): void {
   if (!el || !s) return;
   const depth = getSettings().navDepth;
   const state = view?.state ?? s.state;
-  const items: { level: number; text: string; pos: number }[] = [];
+  const items: { level: number; text: string; pos: number; analytic?: boolean }[] = [];
   state.doc.forEach((node, offset) => {
     if (node.type === schema.nodes.heading && node.attrs.level <= depth) {
       items.push({ level: node.attrs.level, text: node.textContent || '(untitled)', pos: offset });
+    } else if (node.type === schema.nodes.paragraph && node.attrs.kind === 'analytic' && depth >= 4) {
+      items.push({ level: 4, text: node.textContent || '(analytic)', pos: offset, analytic: true });
     }
   });
   const selHead = state.selection.head;
@@ -485,7 +623,7 @@ function renderOutline(): void {
       ...(items.length === 0
         ? [h('div', { class: 'empty' }, 'Headings appear here. F4 makes a Pocket, F5 a Hat, F6 a Block, F7 a Tag.')]
         : items.map((item) => h('button', {
-            class: `l${item.level}${item.pos === activePos ? ' active-mark' : ''}`,
+            class: `l${item.level}${item.analytic ? ' an' : ''}${item.pos === activePos ? ' active-mark' : ''}`,
             onclick: () => {
               if (!view) return;
               const pos = item.pos + 1;
@@ -493,55 +631,10 @@ function renderOutline(): void {
               view.focus();
             },
           },
-            h('span', { class: 'lvl' }, ['', 'P', 'H', 'B', 'T'][item.level]),
+            h('span', { class: 'lvl' }, item.analytic ? 'A' : ['', 'P', 'H', 'B', 'T'][item.level]),
             h('span', {}, item.text),
           ))),
     ),
-  );
-}
-
-// --- contextual toolbar ---
-function hideCtx(): void {
-  const bar = document.getElementById('ctxbar');
-  if (bar) bar.hidden = true;
-}
-
-function updateCtx(): void {
-  const bar = document.getElementById('ctxbar');
-  const wrap = document.getElementById('docwrap');
-  if (!bar || !wrap || !view) return;
-  if (getSettings().toolbar !== 'contextual') { bar.hidden = true; return; }
-  const { empty, from } = view.state.selection;
-  if (empty) { bar.hidden = true; return; }
-  bar.hidden = false;
-  if (bar.childElementCount === 0) buildCtxButtons(bar);
-  const coords = view.coordsAtPos(from);
-  const wrapRect = wrap.getBoundingClientRect();
-  const top = coords.top - wrapRect.top + wrap.scrollTop - 44;
-  const left = Math.max(8, Math.min(coords.left - wrapRect.left - 20, wrap.clientWidth - 460));
-  bar.style.top = `${Math.max(6, top)}px`;
-  bar.style.left = `${left}px`;
-}
-
-function buildCtxButtons(bar: HTMLElement): void {
-  const run = (cmd: (state: EditorState, dispatch: any) => boolean) => () => {
-    if (!view) return;
-    cmd(view.state, view.dispatch);
-    view.focus();
-  };
-  const hlColor = () => getSettings().highlightColor;
-  bar.replaceChildren(
-    h('button', { onclick: run(commands.tag) }, 'Tag', h('kbd', {}, 'F7')),
-    h('button', { onclick: run(commands.cite) }, 'Cite', h('kbd', {}, 'F8')),
-    h('button', { onclick: run(commands.underlineStyle) }, 'Underline', h('kbd', {}, 'F9')),
-    h('button', { onclick: run(commands.emphasis) }, 'Emphasis', h('kbd', {}, 'F10')),
-    h('button', { onclick: () => { if (view) { toggleHighlight(hlColor())(view.state, view.dispatch); view.focus(); } } },
-      h('span', { class: 'hlsw', style: `background:var(--hl-${hlColor()})` }), 'Highlight', h('kbd', {}, 'F11')),
-    h('span', { class: 'sep' }),
-    h('button', { onclick: run(commands.shrink) }, 'Shrink', h('kbd', {}, '⌘8')),
-    h('button', { onclick: run(commands.clear) }, 'Clear', h('kbd', {}, 'F12')),
-    h('span', { class: 'sep' }),
-    h('button', { onclick: () => sendToSpeech() }, 'Send →'),
   );
 }
 
@@ -551,17 +644,17 @@ function toggleReadMode(): void {
   const s = getSettings();
   document.getElementById('docwrap')?.setAttribute('class', docwrapClass(s));
   view?.setProps({ editable: () => !readMode });
-  if (s.toolbar === 'full' && !showingHome) document.querySelector('.ribbon')?.replaceWith(renderRibbon());
+  updateRibbonState();
   toast(readMode ? 'Read mode — the doc shows only what gets read; editing is off.' : 'Read mode off');
 }
 
-// --- find ---
+// --- find / replace ---
 function closeFind(): void {
   document.getElementById('findbar')?.remove();
   view?.focus();
 }
 
-function openFind(): void {
+function openFind(withReplace = false): void {
   if (showingHome || !view) return;
   document.getElementById('findbar')?.remove();
   const wrap = document.getElementById('docwrap');
@@ -586,7 +679,7 @@ function openFind(): void {
       }
       return false;
     });
-    count.textContent = matches.length === 0 ? '0' : `${matches.length}`;
+    count.textContent = `${matches.length}`;
   };
 
   const jump = (delta: number) => {
@@ -600,94 +693,305 @@ function openFind(): void {
     count.textContent = `${idx + 1}/${matches.length}`;
   };
 
+  const replaceOne = () => {
+    if (!view || idx < 0 || !matches[idx]) { collect(input.value); jump(1); return; }
+    const m = matches[idx];
+    view.dispatch(view.state.tr.insertText(replInput.value, m.from, m.to));
+    collect(input.value);
+    jump(1);
+  };
+  const replaceAll = () => {
+    if (!view) return;
+    collect(input.value);
+    if (matches.length === 0) return;
+    let tr = view.state.tr;
+    for (const m of [...matches].reverse()) tr = tr.insertText(replInput.value, m.from, m.to);
+    view.dispatch(tr);
+    const n = matches.length;
+    collect(input.value);
+    toast(`Replaced ${n} occurrence${n === 1 ? '' : 's'}`);
+  };
+
   const input = h('input', {
     type: 'text', placeholder: 'Find in document…', 'aria-label': 'Find',
     oninput: () => collect(input.value),
     onkeydown: (e: KeyboardEvent) => {
-      if (e.key === 'Enter') { e.preventDefault(); collect(input.value); jump(e.shiftKey ? -1 : 1); }
+      if (e.key === 'Enter') { e.preventDefault(); if (idx < 0) collect(input.value); jump(e.shiftKey ? -1 : 1); }
       else if (e.key === 'Escape') { e.stopPropagation(); closeFind(); }
     },
   });
-  const bar = h('div', { class: 'findbar', id: 'findbar' },
-    input, count,
-    h('button', { title: 'Previous (Shift-Enter)', 'aria-label': 'Previous match', onclick: () => jump(-1) }, '‹'),
-    h('button', { title: 'Next (Enter)', 'aria-label': 'Next match', onclick: () => jump(1) }, '›'),
-    h('button', { title: 'Close (Esc)', 'aria-label': 'Close find', onclick: () => closeFind() }, '×'),
-  );
-  wrap.prepend(bar);
+  const replInput = h('input', {
+    type: 'text', placeholder: 'Replace with…', 'aria-label': 'Replace',
+    onkeydown: (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); replaceOne(); }
+      else if (e.key === 'Escape') { e.stopPropagation(); closeFind(); }
+    },
+  });
+  const rows: HTMLElement[] = [
+    h('div', { class: 'frow' },
+      input, count,
+      h('button', { title: 'Previous (Shift-Enter)', 'aria-label': 'Previous match', onclick: () => jump(-1) }, '‹'),
+      h('button', { title: 'Next (Enter)', 'aria-label': 'Next match', onclick: () => jump(1) }, '›'),
+      h('button', { title: 'Close (Esc)', 'aria-label': 'Close find', onclick: () => closeFind() }, '×'),
+    ),
+  ];
+  if (withReplace) {
+    rows.push(h('div', { class: 'frow' },
+      replInput,
+      h('button', { class: 'ftext', onclick: replaceOne }, 'Replace'),
+      h('button', { class: 'ftext', onclick: replaceAll }, 'All'),
+    ));
+  }
+  wrap.prepend(h('div', { class: 'findbar', id: 'findbar' }, ...rows));
   input.focus();
 }
 
-// --- full ribbon (optional) ---
-interface RibbonBtn { label?: string; kbd?: string; icon?: () => SVGElement; glyph?: string;
-  cls?: string; title: string; run?: () => void; soon?: string }
+// --- ribbon: every command, always visible ---
+interface RibbonBtn {
+  label?: string; kbd?: string; icon?: () => SVGElement; glyph?: string;
+  cls?: string; title: string; run?: () => void; soon?: string;
+  k?: string;                        // state key for cursor lighting
+  picker?: () => HTMLElement;        // split-button dropdown
+  menu?: boolean;                    // whole button opens the picker (no split)
+}
+
+function runCmd(cmd: Command): () => void {
+  return () => { if (view) { cmd(view.state, view.dispatch); view.focus(); } };
+}
+
+function closePickers(): void {
+  document.querySelectorAll('.rpick').forEach((n) => n.remove());
+}
+
+function openPicker(anchor: HTMLElement, content: HTMLElement): void {
+  closePickers();
+  const rect = anchor.getBoundingClientRect();
+  content.classList.add('rpick');
+  content.style.top = `${rect.bottom + 4}px`;
+  content.style.left = `${Math.min(rect.left, innerWidth - 240)}px`;
+  document.body.append(content);
+  const dismiss = (e: MouseEvent) => {
+    if (!content.contains(e.target as Node)) { content.remove(); removeEventListener('mousedown', dismiss, true); }
+  };
+  addEventListener('mousedown', dismiss, true);
+}
+
+function swatchGrid(kind: 'hl' | 'shade' | 'font'): HTMLElement {
+  const grid = h('div', { class: 'swgrid' });
+  if (kind === 'hl') {
+    for (const c of HL_COLORS) {
+      grid.append(h('button', {
+        class: 'sw', style: `background:var(--hl-${c})`, title: c,
+        onclick: () => { updateSettings({ highlightColor: c }); closePickers(); renderRibbonSwatches(); toast(`Highlight color: ${c}`); view?.focus(); },
+      }));
+    }
+  } else if (kind === 'shade') {
+    for (const hex of SHADE_HEXES) {
+      grid.append(h('button', {
+        class: 'sw', style: `background:#${hex}`, title: `#${hex}`,
+        onclick: () => { updateSettings({ shadeHex: hex }); closePickers(); renderRibbonSwatches(); toast(`Background color set`); view?.focus(); },
+      }));
+    }
+  } else {
+    for (const hex of FONT_HEXES) {
+      grid.append(h('button', {
+        class: `sw${hex === 'auto' ? ' auto' : ''}`,
+        style: hex === 'auto' ? '' : `background:#${hex}`,
+        title: hex === 'auto' ? 'Automatic' : `#${hex}`,
+        onclick: () => {
+          if (view) {
+            const { from, to } = view.state.selection;
+            if (from !== to) {
+              const tr = hex === 'auto'
+                ? view.state.tr.removeMark(from, to, schema.marks.fcolor)
+                : view.state.tr.addMark(from, to, schema.marks.fcolor.create({ hex }));
+              view.dispatch(tr);
+            }
+            view.focus();
+          }
+          closePickers();
+        },
+      }));
+    }
+  }
+  return grid;
+}
+
+function menuList(items: { label: string; hint?: string; run: () => void }[]): HTMLElement {
+  return h('div', { class: 'rmenu' },
+    ...items.map((it) => h('button', {
+      onclick: () => { closePickers(); it.run(); view?.focus(); },
+    }, it.label, it.hint ? h('span', { class: 'hint' }, it.hint) : null)));
+}
+
+function sizeMenu(): HTMLElement {
+  return menuList(FONT_SIZES.map((pt) => ({
+    label: `${pt} pt`,
+    run: () => { if (view) setFontSize(pt * 2)(view.state, view.dispatch); },
+  })).concat([{
+    label: 'File default (remove size)',
+    run: () => { if (view) setFontSize(0)(view.state, view.dispatch); },
+  }]));
+}
+
+function docMenu(): HTMLElement {
+  const cmd = (c: Command) => () => { if (view) c(view.state, view.dispatch); };
+  return menuList([
+    { label: `Standardize highlighting → ${getSettings().highlightColor}`, run: cmd(standardizeHighlights(getSettings().highlightColor)) },
+    { label: 'Remove all highlighting', run: cmd(removeAllOf('highlight')) },
+    { label: 'Remove all background color', run: cmd(removeAllOf('shd')) },
+    { label: 'Highlight → background color', run: cmd(highlightToBackground) },
+    { label: 'Background color → highlight', run: cmd(backgroundToHighlight) },
+    { label: 'Remove hyperlinks', run: cmd(removeAllOf('link')) },
+  ]);
+}
+
+function cardMenu(): HTMLElement {
+  const cmd = (c: Command) => () => { if (view) c(view.state, view.dispatch); };
+  return menuList([
+    { label: 'Select card', run: cmd(commands.selectCard) },
+    { label: 'Select section', hint: '⌥A', run: cmd(commands.selectSection) },
+    { label: 'Condense', hint: 'F3', run: cmd(commands.condense) },
+    { label: 'Uncondense', hint: '⌘⌥⇧F3', run: cmd(commands.uncondense) },
+    { label: 'Shrink', hint: '⌘8', run: cmd(commands.shrink) },
+    { label: 'Regrow', hint: '⌘⇧8', run: cmd(commands.regrow) },
+    { label: 'Copy previous cite', hint: '⌥F8', run: cmd(commands.copyPreviousCite) },
+    { label: 'Send to speech doc', hint: '`', run: () => { sendToSpeech('cursor'); } },
+    { label: 'Park in dropzone', hint: '⌘`', run: () => { sendToDropzone(); } },
+  ]);
+}
+
+function renderRibbonSwatches(): void {
+  const s = getSettings();
+  const hl = document.querySelector('.rb[data-k="hl"] .glyph') as HTMLElement | null;
+  if (hl) hl.style.setProperty('--bar', `var(--hl-${s.highlightColor})`);
+  const sh = document.querySelector('.rb[data-k="shade"] .glyph') as HTMLElement | null;
+  if (sh) sh.style.setProperty('--bar', `#${s.shadeHex}`);
+}
 
 function renderRibbon(): HTMLElement {
-  const run = (cmd: any) => () => { if (view) { cmd(view.state, view.dispatch); view.focus(); } };
   const groups: RibbonBtn[][] = [
     [
-      { icon: iconFolder, title: 'Open (from Home or palette)', run: () => void openFile() },
-      { icon: iconSave, title: 'Save', run: () => void doSave() },
-      { icon: iconExport, title: 'Save As…', run: () => void doSaveAs() },
-      { icon: iconCycle, title: 'Convert', soon: 'Format conversion' },
+      { icon: iconFolder, title: 'Open (Mod-O)', run: () => void openFile() },
+      { icon: iconSave, title: 'Save (Mod-S)', run: () => void doSave() },
+      { icon: iconExport, title: 'Save As… (Mod-Shift-S)', run: () => void doSaveAs() },
+      { icon: iconPaste, title: 'Paste plain text (F2)', run: () => void pastePlain() },
     ],
     [
-      { icon: iconUndo, title: 'Undo', run: () => undoRedo('undo') },
-      { icon: iconRedo, title: 'Redo', run: () => undoRedo('redo') },
-      { icon: iconSend, title: 'Send to speech doc', run: () => sendToSpeech() },
-      { icon: iconDown, title: 'Send to bottom of speech doc', run: () => sendToSpeech() },
+      { icon: iconUndo, title: 'Undo (Mod-Z)', run: () => undoRedo('undo') },
+      { icon: iconRedo, title: 'Redo (Mod-Shift-Z)', run: () => undoRedo('redo') },
+      { icon: iconSend, title: 'Send to speech doc (`)', run: () => { sendToSpeech('cursor'); } },
+      { icon: iconDown, title: 'Append to speech doc (Alt-`)', run: () => { sendToSpeech('end'); } },
     ],
     [
-      { label: 'Pocket', kbd: 'F4', title: 'Pocket — Heading 1', run: run(commands.pocket) },
-      { label: 'Tag', kbd: 'F7', title: 'Tag', run: run(commands.tag) },
-      { label: 'Hat', kbd: 'F5', title: 'Hat — Heading 2', run: run(commands.hat) },
-      { label: 'Block', kbd: 'F6', title: 'Block — Heading 3', run: run(commands.block) },
-      { label: 'Analytic', cls: 'analytic', title: 'Analytic', soon: 'Analytic style' },
-      { label: 'Undertag', cls: 'undertag', title: 'Undertag', soon: 'Undertag style' },
+      { label: 'Pocket', kbd: 'F4', k: 'h1', title: 'Pocket — Heading 1', run: runCmd(commands.pocket) },
+      { label: 'Tag', kbd: 'F7', k: 'h4', title: 'Tag', run: runCmd(commands.tag) },
+      { label: 'Hat', kbd: 'F5', k: 'h2', title: 'Hat — Heading 2', run: runCmd(commands.hat) },
+      { label: 'Block', kbd: 'F6', k: 'h3', title: 'Block — Heading 3', run: runCmd(commands.block) },
+      { label: 'Analytic', kbd: '⌘F7', cls: 'analytic', k: 'analytic', title: 'Analytic — standalone analysis', run: runCmd(commands.analytic) },
+      { label: 'Undertag', kbd: '⌘F8', cls: 'undertag', k: 'undertag', title: 'Undertag — annotation under a tag', run: runCmd(commands.undertag) },
     ],
     [
-      { label: 'Cite', kbd: 'F8', title: 'Cite style', run: run(commands.cite) },
-      { label: 'Underline', kbd: 'F9', title: 'Underline style', run: run(commands.underlineStyle) },
-      { label: 'Emphasis', kbd: 'F10', title: 'Emphasis style', run: run(commands.emphasis) },
-      { label: 'Clear', kbd: 'F12', title: 'Clear formatting', run: run(commands.clear) },
-      { label: 'Condense', kbd: 'F3', title: 'Condense — merge the card body into one paragraph', run: run(commands.condense) },
-      { label: 'Case', kbd: '⇧F3', title: 'Cycle case: lower → UPPER → Title', run: run(commands.toggleCase) },
+      { label: 'Cite', kbd: 'F8', k: 'cite', title: 'Cite style', run: runCmd(commands.cite) },
+      { label: 'Underline', kbd: 'F9', k: 'ustyle', title: 'Underline style', run: runCmd(commands.underlineStyle) },
+      { label: 'Emphasis', kbd: 'F10', k: 'emph', title: 'Emphasis style', run: runCmd(commands.emphasis) },
+      { label: 'Clear', kbd: 'F12', title: 'Clear formatting', run: runCmd(commands.clear) },
+      { label: 'Condense', kbd: 'F3', title: 'Condense the card (Alt-F3 flat · ⌘Alt-F3 pilcrows · ⌘Alt-Shift-F3 restore)', run: () => { if (view) { const cmd = commands.condense; cmd(view.state, view.dispatch); view.focus(); } } },
+      { label: 'Case', kbd: '⇧F3', title: 'Cycle case: lower → UPPER → Title', run: runCmd(commands.toggleCase) },
     ],
     [
-      { glyph: 'A', cls: 'cbar', title: 'Highlight (F11) — active color', run: () => { if (view) { toggleHighlight(getSettings().highlightColor)(view.state, view.dispatch); view.focus(); } } },
-      { glyph: 'x²', title: 'Superscript', run: run(commands.superscript) },
-      { glyph: 'A', cls: 'cbar shade', title: 'Background color (Mod-F11)', run: () => { if (view) { toggleShade(getSettings().shadeHex)(view.state, view.dispatch); view.focus(); } } },
-      { glyph: 'x₂', title: 'Subscript', run: run(commands.subscript) },
-      { glyph: 'A−', title: 'Shrink un-underlined (Mod-8)', run: run(commands.shrink) },
-      { glyph: 'Aa', title: 'Toggle case (Shift-F3)', run: run(commands.toggleCase) },
+      { glyph: 'A', cls: 'cbar', k: 'hl', title: 'Highlight (F11) — active color', run: () => { if (view) { toggleHighlight(getSettings().highlightColor)(view.state, view.dispatch); view.focus(); } },
+        picker: () => swatchGrid('hl') },
+      { glyph: 'A', cls: 'cbar', k: 'shade', title: 'Background color (⌘F11)', run: () => { if (view) { toggleShade(getSettings().shadeHex)(view.state, view.dispatch); view.focus(); } },
+        picker: () => swatchGrid('shade') },
+      { glyph: 'A', cls: 'fcol', title: 'Font color', run: () => {}, picker: () => swatchGrid('font') },
     ],
     [
-      { icon: iconEye, cls: readMode ? 'on' : undefined, title: 'Read mode — show only what gets read', run: () => toggleReadMode() },
-      { icon: iconFind, title: 'Find (Mod-F)', run: () => openFind() },
+      { glyph: '11', cls: 'fsz', title: 'Font size (pt)', menu: true, picker: () => sizeMenu() },
+      { glyph: 'A˄', title: 'Grow font 1pt', run: runCmd(stepFontSize(1, () => 22)) },
+      { glyph: 'A˅', title: 'Shrink font 1pt', run: runCmd(stepFontSize(-1, () => 22)) },
+    ],
+    [
+      { label: 'Doc ▾', title: 'Document operations', menu: true, picker: () => docMenu() },
+      { label: 'Card ▾', title: 'Card operations', menu: true, picker: () => cardMenu() },
+    ],
+    [
+      { glyph: 'x²', k: 'sup', title: 'Superscript', run: runCmd(commands.superscript) },
+      { glyph: 'S', cls: 'strike', k: 'strike', title: 'Strikethrough', run: runCmd(commands.strike) },
+      { glyph: 'A−', title: 'Shrink un-underlined (⌘8)', run: runCmd(commands.shrink) },
+      { glyph: 'x₂', k: 'sub', title: 'Subscript', run: runCmd(commands.subscript) },
+      { glyph: '¶', title: 'Copy previous cite (Alt-F8)', run: runCmd(commands.copyPreviousCite) },
+      { glyph: 'A+', title: 'Regrow — restore full size (⌘⇧8)', run: runCmd(commands.regrow) },
+    ],
+    [
+      { icon: iconEye, k: 'read', title: 'Read mode — show only what gets read', run: () => toggleReadMode() },
+      { icon: iconFind, title: 'Find (⌘F) / Replace (⌘H)', run: () => openFind(true) },
+      { glyph: 'Σ', title: 'Word count & read times', run: () => openWordCount() },
       { icon: iconBook, title: 'Flashcards', soon: 'Flashcards' },
-      { icon: iconPanes, title: 'Three-pane view', soon: 'Multi-pane' },
     ],
   ];
   const right: RibbonBtn[] = [
-    { icon: iconKeys, title: 'Command palette (Mod-K)', run: () => openPalette() },
+    { icon: iconKeys, title: 'Keyboard shortcuts', run: () => openSettings('shortcuts') },
     { icon: iconGear, title: 'Settings', run: () => openSettings() },
     { icon: iconTimer, title: 'Pop-out timer', run: () => popoutTimer() },
     { icon: iconHome, title: 'Home', run: () => { syncActiveState(); showingHome = true; renderAll(); } },
   ];
-  const btn = (b: RibbonBtn) => h('button', {
-    class: `rb${b.cls ? ` ${b.cls}` : ''}${b.label ? ' wide' : ''}`,
-    title: b.title,
-    onclick: b.run ?? (() => toast(`${b.soon} is on the roadmap — not in v0.1 yet.`)),
-  },
-    b.icon ? b.icon() : null,
-    b.glyph ? h('span', { class: `glyph${b.cls?.includes('cbar') ? ` ${b.cls}` : ''}` }, b.glyph) : null,
-    b.label ?? null,
-    b.kbd ? h('kbd', {}, b.kbd) : null,
-  );
-  return h('div', { class: 'ribbon', role: 'toolbar', 'aria-label': 'All commands' },
+  const btn = (b: RibbonBtn) => {
+    const el = h('button', {
+      class: `rb${b.cls ? ` ${b.cls}` : ''}${b.label ? ' wide' : ''}`,
+      title: b.title,
+      ...(b.k ? { 'data-k': b.k } : {}),
+      onclick: b.menu
+        ? (e: Event) => openPicker(e.currentTarget as HTMLElement, b.picker!())
+        : (b.run ?? (() => toast(`${b.soon} is on the roadmap — not in v0.2 yet.`))),
+    },
+      b.icon ? b.icon() : null,
+      b.glyph ? h('span', { class: `glyph${b.cls ? ` ${b.cls}` : ''}` }, b.glyph) : null,
+      b.label ?? null,
+      b.kbd ? h('kbd', {}, b.kbd) : null,
+    );
+    if (!b.picker || b.menu) return el;
+    const wrap = h('span', { class: 'rsplit' }, el,
+      h('button', {
+        class: 'rb arrow', title: `${b.title} — pick color`, 'aria-label': 'Pick color',
+        onclick: (e: Event) => openPicker(e.currentTarget as HTMLElement, b.picker!()),
+      }, '▾'));
+    return wrap;
+  };
+  const bar = h('div', { class: 'ribbon', role: 'toolbar', 'aria-label': 'All commands' },
     ...groups.map((g) => h('div', { class: 'rg' }, ...g.map(btn))),
     h('div', { class: 'rg last' }, ...right.map(btn)),
   );
+  requestAnimationFrame(() => { renderRibbonSwatches(); updateRibbonState(); });
+  return bar;
+}
+
+/** Light the style buttons for whatever the cursor sits in — like CardMirror. */
+function updateRibbonState(): void {
+  if (!view) return;
+  const state = view.state;
+  const { $from, from, to, empty } = state.selection;
+  const parent = $from.parent;
+  const on: Record<string, boolean> = {
+    h1: false, h2: false, h3: false, h4: false, analytic: false, undertag: false,
+    read: readMode,
+  };
+  if (parent.type === schema.nodes.heading) on[`h${parent.attrs.level}`] = true;
+  if (parent.type === schema.nodes.paragraph && parent.attrs.kind === 'analytic') on.analytic = true;
+  if (parent.type === schema.nodes.paragraph && parent.attrs.kind === 'undertag') on.undertag = true;
+  const M = schema.marks;
+  const has = (t: any) => empty
+    ? !!t.isInSet(state.storedMarks ?? $from.marks())
+    : state.doc.rangeHasMark(from, to, t);
+  on.cite = has(M.cite); on.ustyle = has(M.ustyle); on.emph = has(M.emph);
+  on.hl = has(M.highlight); on.shade = has(M.shd);
+  on.sup = false; on.sub = false;
+  const vert = empty ? M.vert.isInSet(state.storedMarks ?? $from.marks()) : null;
+  if (vert) { on.sup = vert.attrs.v === 'superscript'; on.sub = vert.attrs.v === 'subscript'; }
+  on.strike = has(M.strike);
+  document.querySelectorAll<HTMLElement>('.rb[data-k]').forEach((el) => {
+    el.classList.toggle('on', !!on[el.dataset.k!]);
+  });
 }
 
 function undoRedo(which: 'undo' | 'redo'): void {
@@ -696,17 +1000,30 @@ function undoRedo(which: 'undo' | 'redo'): void {
   view.focus();
 }
 
-// --- speech pane ---
+// --- speech pane + dropzone ---
 function renderSpeech(): void {
   const el = document.getElementById('speechpane');
   if (!el) return;
   const sp = speechSession();
   const s = getSettings();
+  const dz = h('div', { class: 'dz' },
+    h('div', { class: 'dz-head' },
+      h('span', { class: 'rail-label' }, 'DROPZONE'),
+      h('span', { class: 'dz-hint' }, '⌘` parks a card'),
+    ),
+    ...(dropzone.length === 0
+      ? [h('div', { class: 'speech-empty' }, 'A holding shelf. Park a card here when you know you need it but not where yet.')]
+      : dropzone.map((item, i) => h('div', { class: 'dz-item' },
+          h('button', { class: 'dz-take', title: 'Insert at cursor', onclick: () => insertFromDropzone(i) }, item.label),
+          h('button', { class: 'dz-x', title: 'Remove', onclick: () => { dropzone.splice(i, 1); renderSpeech(); } }, '×'),
+        ))),
+  );
   if (!sp) {
     el.replaceChildren(
       h('div', { class: 'speech-head' }, h('h2', {}, 'Speech doc')),
       h('div', { class: 'speech-empty' },
-        'No speech doc yet. Create one from Home, or mark any open tab as the speech doc from the command palette.'),
+        'No speech doc yet. Create one from Home, or mark any open tab as the speech doc from the command palette. Then ` sends the card under your cursor here.'),
+      dz,
     );
     return;
   }
@@ -730,12 +1047,13 @@ function renderSpeech(): void {
     ),
     h('div', { class: 'speech-list' },
       ...(cards.length === 0
-        ? [h('div', { class: 'speech-empty' }, 'Send cards here: select a card and press Send → (or use the palette).')]
+        ? [h('div', { class: 'speech-empty' }, 'Send cards here: cursor on a card, press ` (backtick). Alt-` appends at the end.')]
         : cards.map((c) => h('button', { class: 'sent', onclick: () => { syncActiveState(); activeId = sp.id; showingHome = false; renderAll(); } },
             h('p', { class: 's-tag' }, c.tag),
             h('p', { class: 's-meta' }, h('span', {}, `${c.words} w`)),
           ))),
     ),
+    dz,
     h('div', { class: 'speech-foot' },
       h('span', {}, `${cards.length} card${cards.length === 1 ? '' : 's'}`),
       h('span', {}, 'reads ', h('b', {}, fmtTime(secs))),
@@ -809,67 +1127,113 @@ function renderStatus(): void {
   }
   const state = view?.state ?? s.state;
   const words = readableWords(state.doc);
-  const parts: (HTMLElement | string)[] = [
-    h('span', { class: 'sigma' }, 'Σ'),
-    h('span', { class: 'mono' },
-      `Doc: ${words} · Reader 1: ${fmtTime(secondsAt(words, cfg.reader1Wpm))} · Reader 2: ${fmtTime(secondsAt(words, cfg.reader2Wpm))}`),
-  ];
+  let line = `Doc: ${words} · Reader 1: ${fmtTime(secondsAt(words, cfg.reader1Wpm))} · Reader 2: ${fmtTime(secondsAt(words, cfg.reader2Wpm))}`;
   const sel = state.selection;
   if (!sel.empty) {
     const selWords = readableWordsInSelection(state.doc, sel.from, sel.to);
-    parts.push(h('span', { class: 'mono' }, `Sel: ${selWords} · ${fmtTime(secondsAt(selWords, cfg.reader1Wpm))}`));
+    line += ` | Sel: ${selWords} · ${fmtTime(secondsAt(selWords, cfg.reader1Wpm))}`;
+  } else {
+    const card = cardBodyRange(state);
+    if (card) {
+      const cw = readableWordsInSelection(state.doc, card.from, card.to);
+      if (cw > 0 && cw < words) line += ` | Card: ${cw} · ${fmtTime(secondsAt(cw, cfg.reader1Wpm))}`;
+    }
   }
   el.replaceChildren(
-    ...parts,
+    h('span', { class: 'sigma', role: 'button', title: 'Word count & read times', onclick: () => openWordCount() }, 'Σ'),
+    h('span', { class: 'mono' }, line),
     h('span', { class: 'grow' }),
     h('span', { class: s.dirty ? 'unsaved' : 'saved' }, s.dirty ? (s.handle ? 'Autosaving…' : 'Unsaved changes') : 'Saved'),
     h('div', { class: 'zoom' },
-      h('button', { 'aria-label': 'Zoom out', onclick: () => { updateSettings({ zoom: Math.max(50, getSettings().zoom - 10) }); applyZoom(); renderStatus(); } }, '−'),
+      h('button', { 'aria-label': 'Zoom out', onclick: () => zoomBy(-10) }, '−'),
       h('span', { class: 'pct' }, `${cfg.zoom}%`),
-      h('button', { 'aria-label': 'Zoom in', onclick: () => { updateSettings({ zoom: Math.min(300, getSettings().zoom + 10) }); applyZoom(); renderStatus(); } }, '+'),
+      h('button', { 'aria-label': 'Zoom in', onclick: () => zoomBy(10) }, '+'),
       h('button', { 'aria-label': 'Reset zoom', style: 'font-size:11px', onclick: () => { updateSettings({ zoom: 100 }); applyZoom(); renderStatus(); } }, '⟲'),
     ),
   );
+}
+
+// --- word count dialog ---
+function openWordCount(): void {
+  const s = activeSession();
+  if (!s) return;
+  const state = view?.state ?? s.state;
+  const cfg = getSettings();
+  const words = readableWords(state.doc);
+  const sel = state.selection;
+  const rows: HTMLElement[] = [
+    h('div', { class: 'wc-row' }, h('b', {}, 'Document'), h('span', {}, `${words} readable words`)),
+    h('div', { class: 'wc-row' }, h('span', {}, `Reader 1 (${cfg.reader1Wpm} wpm)`), h('span', {}, fmtTime(secondsAt(words, cfg.reader1Wpm)))),
+    h('div', { class: 'wc-row' }, h('span', {}, `Reader 2 (${cfg.reader2Wpm} wpm)`), h('span', {}, fmtTime(secondsAt(words, cfg.reader2Wpm)))),
+  ];
+  if (!sel.empty) {
+    const sw = readableWordsInSelection(state.doc, sel.from, sel.to);
+    rows.push(
+      h('div', { class: 'wc-row sep' }, h('b', {}, 'Selection'), h('span', {}, `${sw} readable words`)),
+      h('div', { class: 'wc-row' }, h('span', {}, 'Reader 1'), h('span', {}, fmtTime(secondsAt(sw, cfg.reader1Wpm)))),
+    );
+  }
+  closeOverlay();
+  showOverlay(h('div', { class: 'modal', role: 'dialog', 'aria-label': 'Word count' },
+    h('h2', {}, 'Word count', h('button', { class: 'x', onclick: closeOverlay, 'aria-label': 'Close' }, '×')),
+    ...rows,
+    h('p', { class: 'note' }, 'Only words that get read out loud count: tags, cites, analytics, underlines, and highlights. Reader speeds live in Settings.'),
+  ));
 }
 
 // --- command palette ---
 interface PaletteItem { label: string; hint?: string; run: () => void }
 
 function paletteItems(): PaletteItem[] {
-  const run = (cmd: any) => () => { if (view) { cmd(view.state, view.dispatch); view.focus(); } };
+  const run = (cmd: Command) => () => { if (view) { cmd(view.state, view.dispatch); view.focus(); } };
   const items: PaletteItem[] = [
     { label: 'New document', run: () => newDocument(false) },
     { label: 'New speech document', run: () => newDocument(true) },
-    { label: 'Open…', hint: 'file', run: () => void openFile() },
+    { label: 'Open…', hint: '⌘O', run: () => void openFile() },
     { label: 'Save', hint: '⌘S', run: () => void doSave() },
     { label: 'Save As…', hint: '⌘⇧S', run: () => void doSaveAs() },
     { label: 'Go home', run: () => { syncActiveState(); showingHome = true; renderAll(); } },
+    { label: 'Paste plain text', hint: 'F2', run: () => void pastePlain() },
     { label: 'Pocket (Heading 1)', hint: 'F4', run: run(commands.pocket) },
     { label: 'Hat (Heading 2)', hint: 'F5', run: run(commands.hat) },
     { label: 'Block (Heading 3)', hint: 'F6', run: run(commands.block) },
     { label: 'Tag', hint: 'F7', run: run(commands.tag) },
+    { label: 'Analytic', hint: '⌘F7', run: run(commands.analytic) },
+    { label: 'Undertag', hint: '⌘F8', run: run(commands.undertag) },
     { label: 'Cite', hint: 'F8', run: run(commands.cite) },
+    { label: 'Copy previous cite', hint: '⌥F8', run: run(commands.copyPreviousCite) },
     { label: 'Underline', hint: 'F9', run: run(commands.underlineStyle) },
     { label: 'Emphasis', hint: 'F10', run: run(commands.emphasis) },
     { label: 'Highlight', hint: 'F11', run: () => { if (view) { toggleHighlight(getSettings().highlightColor)(view.state, view.dispatch); view.focus(); } } },
-    { label: 'Clear formatting', hint: 'F12', run: run(commands.clear) },
-    { label: 'Shrink un-underlined text', hint: '⌘8', run: run(commands.shrink) },
-    { label: 'Condense card', hint: 'F3', run: run(commands.condense) },
-    { label: 'Toggle case (lower / UPPER / Title)', hint: '⇧F3', run: run(commands.toggleCase) },
     { label: 'Background color', hint: '⌘F11', run: () => { if (view) { toggleShade(getSettings().shadeHex)(view.state, view.dispatch); view.focus(); } } },
+    { label: 'Clear formatting', hint: 'F12', run: run(commands.clear) },
+    { label: 'Condense card', hint: 'F3', run: run(commands.condense) },
+    { label: 'Condense with pilcrows', hint: '⌘⌥F3', run: run(commands.condense) },
+    { label: 'Uncondense (restore breaks)', hint: '⌘⌥⇧F3', run: run(commands.uncondense) },
+    { label: 'Toggle case (lower / UPPER / Title)', hint: '⇧F3', run: run(commands.toggleCase) },
+    { label: 'Shrink un-underlined text', hint: '⌘8', run: run(commands.shrink) },
+    { label: 'Regrow (restore full size)', hint: '⌘⇧8', run: run(commands.regrow) },
+    { label: 'Indent', hint: 'Tab', run: run(commands.indent) },
+    { label: 'Outdent', hint: '⇧Tab', run: run(commands.outdent) },
+    { label: 'Reading-position marker', hint: '⌘⇧D', run: run(toggleMarker(nowShort)) },
     { label: 'Read mode', run: () => toggleReadMode() },
     { label: 'Find in document', hint: '⌘F', run: () => openFind() },
+    { label: 'Find and replace', hint: '⌘H', run: () => openFind(true) },
+    { label: 'Word count & read times', run: () => openWordCount() },
     { label: 'Select card', run: run(commands.selectCard) },
-    { label: 'Send to speech doc', run: () => sendToSpeech() },
+    { label: 'Select section', hint: '⌥A', run: run(commands.selectSection) },
+    { label: 'Send to speech doc', hint: '`', run: () => { sendToSpeech('cursor'); } },
+    { label: 'Append to speech doc', hint: '⌥`', run: () => { sendToSpeech('end'); } },
+    { label: 'Park in dropzone', hint: '⌘`', run: () => { sendToDropzone(); } },
     { label: 'Mark this tab as speech doc', run: () => { const s = activeSession(); if (s) { for (const o of sessions) o.isSpeech = false; s.isSpeech = true; renderAll(); } } },
     { label: 'Toggle Clean / Faithful view', run: () => updateSettings({ docView: getSettings().docView === 'clean' ? 'faithful' : 'clean' }) },
-    { label: 'Toggle full toolbar', run: () => updateSettings({ toolbar: getSettings().toolbar === 'full' ? 'contextual' : 'full' }) },
     { label: 'Pop-out timer', run: () => popoutTimer() },
     { label: 'Take the tour', run: () => openTutorial() },
+    { label: 'Keyboard shortcuts', run: () => openSettings('shortcuts') },
     { label: 'Settings…', run: () => openSettings() },
   ];
   for (const c of HL_COLORS) {
-    items.push({ label: `Set highlight color: ${c}`, run: () => { updateSettings({ highlightColor: c }); toast(`Highlight color: ${c}`); } });
+    items.push({ label: `Set highlight color: ${c}`, run: () => { updateSettings({ highlightColor: c }); renderRibbonSwatches(); toast(`Highlight color: ${c}`); } });
   }
   return items;
 }
@@ -908,19 +1272,38 @@ function openPalette(): void {
   input.focus();
 }
 
-// --- save as modal ---
+// --- save as modal (with presets) ---
 function openSaveAsModal(s: Session): void {
   closeOverlay();
   const nameInput = h('input', { type: 'text', value: s.name });
+  let preset: 'asis' | 'send' | 'read' = 'asis';
+  const presetBtns: HTMLButtonElement[] = [];
+  const pick = (p: typeof preset, base: string) => () => {
+    preset = p;
+    presetBtns.forEach((b) => b.classList.toggle('on', b.dataset.p === p));
+    const cfg = getSettings();
+    const strip = new RegExp(`^(${[cfg.sendPrefix, cfg.readPrefix].filter(Boolean).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
+    const raw = cfg.sendPrefix || cfg.readPrefix ? nameInput.value.replace(strip, '') : nameInput.value;
+    nameInput.value = !cfg.prefixPresets ? raw
+      : p === 'send' ? `${cfg.sendPrefix}${raw}` : p === 'read' ? `${cfg.readPrefix}${raw}` : raw;
+    void base;
+  };
+  const presetBtn = (p: typeof preset, label: string, desc: string) => {
+    const b = h('button', { class: `opt${p === 'asis' ? ' on' : ''}`, 'data-p': p, title: desc, onclick: pick(p, s.name) }, label);
+    presetBtns.push(b);
+    return b;
+  };
   showOverlay(h('div', { class: 'modal', role: 'dialog', 'aria-label': 'Save As' },
     h('h2', {}, 'Save As', h('button', { class: 'x', onclick: closeOverlay, 'aria-label': 'Close' }, '×')),
     h('div', { class: 'field' }, h('label', {}, 'Name'), nameInput),
     h('div', { class: 'field' },
-      h('label', {}, 'Format'),
+      h('label', {}, 'What to save'),
       h('div', { class: 'row' },
-        h('span', { class: 'opt on' }, 'Word (.docx) — Verbatim-compatible'),
+        presetBtn('asis', 'As-is', 'A full copy'),
+        presetBtn('send', 'Send Doc', 'A clean copy for the judge or opponent — analytics and undertags stripped'),
+        presetBtn('read', 'Read Doc', 'Only what gets read: tags, cites, analytics, highlighted text'),
       ),
-      h('p', { class: 'note' }, 'Send Doc / Read Doc / Marked Doc presets are on the roadmap.'),
+      h('p', { class: 'note' }, 'Send Doc strips analytics and undertags. Read Doc keeps only read-aloud content. Both leave this tab untouched.'),
     ),
     h('div', { class: 'row' },
       h('button', {
@@ -930,12 +1313,16 @@ function openSaveAsModal(s: Session): void {
           if (!name.toLowerCase().endsWith('.docx')) name += '.docx';
           closeOverlay();
           try {
-            const handle = await saveAs(sessionBytes(s), name);
-            if (handle) { s.handle = handle; s.name = handle.name ?? name; void addRecent({ name: s.name, openedAt: Date.now(), handle }); }
-            else s.name = name;
-            s.dirty = false;
+            const transform = preset === 'send' ? stripForSendDoc : preset === 'read' ? stripForReadDoc : undefined;
+            const bytes = sessionBytes(s, transform);
+            const handle = await saveAs(bytes, name);
+            if (preset === 'asis') {
+              if (handle) { s.handle = handle; s.name = handle.name ?? name; void addRecent({ name: s.name, openedAt: Date.now(), handle }); }
+              else s.name = name;
+              s.dirty = false;
+            }
             renderAll();
-            toast(handle ? `Saved ${s.name}` : `Downloaded ${name}`);
+            toast(handle ? `Saved ${name}` : `Downloaded ${name}`);
           } catch (e) { toast(`Save failed: ${(e as Error).message}`); }
         },
       }, 'Save'),
@@ -946,56 +1333,203 @@ function openSaveAsModal(s: Session): void {
   nameInput.setSelectionRange(0, nameInput.value.replace(/\.docx$/i, '').length);
 }
 
-// --- settings modal ---
-function openSettings(): void {
+// --- settings (tabbed) ---
+type SettingsTab = 'general' | 'files' | 'appearance' | 'editing' | 'shortcuts';
+
+function openSettings(tab: SettingsTab = 'general'): void {
   closeOverlay();
-  const s = getSettings();
-  const wpm1 = h('input', { type: 'number', value: String(s.reader1Wpm), min: '60', max: '600' });
-  const wpm2 = h('input', { type: 'number', value: String(s.reader2Wpm), min: '60', max: '600' });
-  const optRow = (label: string, opts: [string, string][], current: string, set: (v: string) => void) =>
+  let active: SettingsTab = tab;
+  const body = h('div', { class: 'set-body' });
+
+  const optRow = (label: string, opts: [string, string][], current: string, set: (v: string) => void, note?: string) =>
     h('div', { class: 'field' },
       h('label', {}, label),
       h('div', { class: 'row' }, ...opts.map(([value, text]) => h('button', {
         class: `opt${current === value ? ' on' : ''}`,
-        onclick: () => { set(value); openSettings(); },
+        onclick: () => { set(value); render(); },
       }, text))),
+      note ? h('p', { class: 'note' }, note) : null,
     );
-  showOverlay(h('div', { class: 'modal', role: 'dialog', 'aria-label': 'Settings' },
+
+  const numRow = (label: string, value: number, min: number, set: (n: number) => void) => {
+    const input = h('input', {
+      type: 'number', value: String(value), min: String(min),
+      onchange: () => set(Math.max(min, Number(input.value) || value)),
+    });
+    return h('div', { class: 'field' }, h('label', {}, label), input);
+  };
+
+  const textRow = (label: string, value: string, placeholder: string, set: (v: string) => void, note?: string) => {
+    const input = h('input', {
+      type: 'text', value, placeholder,
+      onchange: () => set(input.value),
+    });
+    return h('div', { class: 'field' }, h('label', {}, label), input, note ? h('p', { class: 'note' }, note) : null);
+  };
+
+  function renderGeneral(): HTMLElement[] {
+    const s = getSettings();
+    return [
+      optRow('Theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], s.theme,
+        (v) => updateSettings({ theme: v as Settings['theme'] })),
+      optRow('Default outline depth', [['1', 'Pocket'], ['2', 'Hat'], ['3', 'Block'], ['4', 'Tag']], String(s.navDepth),
+        (v) => updateSettings({ navDepth: Number(v) as 1 | 2 | 3 | 4 })),
+      numRow('Reader 1 (you) — words per minute', s.reader1Wpm, 60, (n) => updateSettings({ reader1Wpm: n })),
+      numRow('Reader 2 (partner) — words per minute', s.reader2Wpm, 60, (n) => updateSettings({ reader2Wpm: n })),
+      numRow('Speech timer length (seconds)', s.speechSeconds, 30, (n) => updateSettings({ speechSeconds: n })),
+    ];
+  }
+
+  function renderFiles(): HTMLElement[] {
+    const s = getSettings();
+    return [
+      optRow('Autosave', [['on', 'On'], ['off', 'Off']], s.autosave ? 'on' : 'off',
+        (v) => updateSettings({ autosave: v === 'on' }),
+        'Autosave writes back to the opened file a few seconds after you stop typing. It needs the browser file permission (Chrome/Edge).'),
+      optRow('Prefix preset saves', [['on', 'On'], ['off', 'Off']], s.prefixPresets ? 'on' : 'off',
+        (v) => updateSettings({ prefixPresets: v === 'on' }),
+        'When on, the Send Doc and Read Doc presets prepend the prefixes below to the filename.'),
+      textRow('Send Doc filename prefix', s.sendPrefix, 'SEND_', (v) => updateSettings({ sendPrefix: v })),
+      textRow('Read Doc filename prefix', s.readPrefix, 'READ_', (v) => updateSettings({ readPrefix: v })),
+    ];
+  }
+
+  function renderAppearance(): HTMLElement[] {
+    const s = getSettings();
+    const sizeInputs: [keyof typeof s.styleSizes, string][] = [
+      ['normal', 'Body'], ['pocket', 'Pocket'], ['hat', 'Hat'], ['block', 'Block'],
+      ['tag', 'Tag'], ['analytic', 'Analytic'], ['undertag', 'Undertag'],
+      ['cite', 'Cite'], ['underline', 'Underline'], ['emphasis', 'Emphasis'],
+    ];
+    const colorRow = (label: string, value: string, set: (v: string) => void) => {
+      const input = h('input', { type: 'color', value, onchange: () => set(input.value) });
+      return h('div', { class: 'field cfield' }, h('label', {}, label), input);
+    };
+    return [
+      optRow('Document view', [['faithful', 'Faithful (exact Verbatim)'], ['clean', 'Clean (display-only)']], s.docView,
+        (v) => updateSettings({ docView: v as Settings['docView'] }),
+        'Faithful renders the file with its own styles, the way Word shows it. Clean is a reading layout; files are identical either way.'),
+      optRow('Dark mode and the page', [['paper', 'Page stays white'], ['themed', 'Theme colors the page']],
+        s.docFollowsTheme ? 'themed' : 'paper',
+        (v) => updateSettings({ docFollowsTheme: v === 'themed' })),
+      optRow('Body font', [['', 'File default'], ...BODY_FONTS.map((f) => [f, f] as [string, string])], s.bodyFont,
+        (v) => updateSettings({ bodyFont: v }),
+        'Display-only: changes how body text renders here, never what the file carries.'),
+      h('div', { class: 'field' },
+        h('label', {}, 'Style font sizes (pt) — blank uses the file\'s own size'),
+        h('div', { class: 'szgrid' },
+          ...sizeInputs.map(([key, label]) => {
+            const input = h('input', {
+              type: 'number', min: '4', max: '72', placeholder: '—',
+              value: s.styleSizes[key] ? String(s.styleSizes[key]) : '',
+              onchange: () => {
+                const n = Number(input.value);
+                const next = { ...getSettings().styleSizes };
+                if (n >= 4 && n <= 72) next[key] = n; else delete next[key];
+                updateSettings({ styleSizes: next });
+              },
+            });
+            return h('span', { class: 'szcell' }, h('span', {}, label), input);
+          }),
+        ),
+        h('p', { class: 'note' }, 'Display-only overrides layered over the file\'s styles. Clear a box to go back to the file\'s size.'),
+      ),
+      colorRow('Analytic text color', s.analyticColor, (v) => updateSettings({ analyticColor: v })),
+      colorRow('Undertag text color', s.undertagColor, (v) => updateSettings({ undertagColor: v })),
+      optRow('Maximum text width', [['off', 'Off'], ['on', 'On']], s.maxWidthOn ? 'on' : 'off',
+        (v) => updateSettings({ maxWidthOn: v === 'on' })),
+      ...(s.maxWidthOn ? [numRow('Text width (px)', s.maxWidthPx, 400, (n) => updateSettings({ maxWidthPx: Math.min(3000, n) }))] : []),
+      numRow('Zoom (%)', s.zoom, 50, (n) => { updateSettings({ zoom: Math.min(300, n) }); applyZoom(); }),
+    ];
+  }
+
+  function renderEditing(): HTMLElement[] {
+    const s = getSettings();
+    return [
+      h('div', { class: 'field' },
+        h('label', {}, 'Highlight color (F11)'),
+        h('div', { class: 'swrow' }, ...HL_COLORS.map((c) => h('button', {
+          class: `sw${s.highlightColor === c ? ' on' : ''}`,
+          style: `background:var(--hl-${c})`,
+          title: c, 'aria-label': `Highlight ${c}`,
+          onclick: () => { updateSettings({ highlightColor: c }); render(); },
+        }))),
+      ),
+      h('div', { class: 'field' },
+        h('label', {}, 'Background color (⌘F11)'),
+        h('div', { class: 'swrow' }, ...SHADE_HEXES.map((hex) => h('button', {
+          class: `sw${s.shadeHex === hex ? ' on' : ''}`,
+          style: `background:#${hex}`,
+          title: `#${hex}`, 'aria-label': `Background #${hex}`,
+          onclick: () => { updateSettings({ shadeHex: hex }); render(); },
+        }))),
+        h('p', { class: 'note' }, 'Background color is a separate layer from highlighting — bulk highlight edits leave it alone.'),
+      ),
+      optRow('Spellcheck', [['off', 'Off'], ['on', 'On']], s.spellcheck ? 'on' : 'off',
+        (v) => updateSettings({ spellcheck: v === 'on' }),
+        'Off by default — author names and jargon trip false positives.'),
+      optRow('F3 condense keeps paragraph breaks', [['on', 'On'], ['off', 'Off (merge flat)']], s.condenseIntegrity ? 'on' : 'off',
+        (v) => updateSettings({ condenseIntegrity: v === 'on' })),
+      optRow('Mark old breaks with ¶ pilcrows', [['on', 'On'], ['off', 'Off']], s.condensePilcrows ? 'on' : 'off',
+        (v) => updateSettings({ condensePilcrows: v === 'on' }),
+        'With pilcrows on, F3 merges but marks each old break with a small ¶; Uncondense (⌘⌥⇧F3) restores them.'),
+      textRow('Shrink protections', s.shrinkProtections, 'e.g. [CHART OMITTED], [VIDEO]',
+        (v) => updateSettings({ shrinkProtections: v }),
+        'Comma-separated strings Shrink keeps at full size. Omission notes like [Table Omitted] are always protected.'),
+    ];
+  }
+
+  function renderShortcuts(): HTMLElement[] {
+    const rows: [string, string][] = [
+      ['F2', 'Paste plain text'],
+      ['F3 · ⌥F3 · ⌘⌥F3 · ⌘⌥⇧F3', 'Condense · flat · with pilcrows · uncondense'],
+      ['⇧F3', 'Toggle case (lower / UPPER / Title)'],
+      ['F4 / F5 / F6 / F7', 'Pocket / Hat / Block / Tag'],
+      ['⌘F7 / ⌘F8', 'Analytic / Undertag'],
+      ['F8 / ⌥F8', 'Cite / Copy previous cite'],
+      ['F9', 'Underline'],
+      ['F10', 'Emphasis'],
+      ['F11 / ⌘F11', 'Highlight / Background color'],
+      ['F12', 'Clear formatting'],
+      ['⌘8 / ⌘⇧8', 'Shrink / Regrow'],
+      ['⌘B / ⌘I / ⌘U', 'Bold / Italic / Underline (direct)'],
+      ['Tab / ⇧Tab', 'Indent / Outdent'],
+      ['PageUp / PageDown', 'Previous / next heading'],
+      ['⌥A', 'Select the current section'],
+      ['` / ⌥` / ⌘`', 'Send to speech · append · park in dropzone'],
+      ['⌘⇧D', 'Reading-position marker'],
+      ['⌘F / ⌘H', 'Find / Find and replace'],
+      ['⌘K', 'Command palette'],
+      ['⌘S / ⌘⇧S', 'Save / Save As'],
+      ['⌘O', 'Open'],
+      ['⌘= / ⌘−', 'Zoom in / out'],
+    ];
+    return [h('div', { class: 'kbd-table' },
+      ...rows.map(([keys, what]) => h('div', { class: 'kbd-row' },
+        h('span', { class: 'kbd-keys' }, keys), h('span', {}, what))))];
+  }
+
+  function render(): void {
+    const panels: Record<SettingsTab, () => HTMLElement[]> = {
+      general: renderGeneral, files: renderFiles, appearance: renderAppearance,
+      editing: renderEditing, shortcuts: renderShortcuts,
+    };
+    body.replaceChildren(...panels[active]());
+    tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === active));
+  }
+
+  const TAB_NAMES: Record<SettingsTab, string> = {
+    general: 'General', files: 'Files', appearance: 'Appearance', editing: 'Editing', shortcuts: 'Shortcuts',
+  };
+  const tabsEl = h('div', { class: 'set-tabs' },
+    ...(['general', 'files', 'appearance', 'editing', 'shortcuts'] as SettingsTab[]).map((t) =>
+      h('button', { 'data-t': t, onclick: () => { active = t; render(); } }, TAB_NAMES[t])),
+  );
+
+  showOverlay(h('div', { class: 'modal set-modal', role: 'dialog', 'aria-label': 'Settings' },
     h('h2', {}, 'Settings', h('button', { class: 'x', onclick: closeOverlay, 'aria-label': 'Close' }, '×')),
-    optRow('Theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], s.theme,
-      (v) => updateSettings({ theme: v as Settings['theme'] })),
-    optRow('Document view', [['clean', 'Clean (better formatting)'], ['faithful', 'Faithful (exact Verbatim)']], s.docView,
-      (v) => updateSettings({ docView: v as Settings['docView'] })),
-    optRow('Toolbar', [['full', 'Full toolbar'], ['contextual', 'Contextual + palette']], s.toolbar,
-      (v) => updateSettings({ toolbar: v as Settings['toolbar'] })),
-    optRow('Dark mode and the page', [['paper', 'Page stays white'], ['themed', 'Theme colors the page']],
-      s.docFollowsTheme ? 'themed' : 'paper',
-      (v) => updateSettings({ docFollowsTheme: v === 'themed' })),
-    optRow('Spellcheck', [['off', 'Off'], ['on', 'On']], s.spellcheck ? 'on' : 'off',
-      (v) => updateSettings({ spellcheck: v === 'on' })),
-    h('div', { class: 'field' },
-      h('label', {}, 'Highlight color (F11)'),
-      h('div', { class: 'swrow' }, ...HL_COLORS.map((c) => h('button', {
-        class: `sw${s.highlightColor === c ? ' on' : ''}`,
-        style: `background:var(--hl-${c})`,
-        title: c, 'aria-label': `Highlight ${c}`,
-        onclick: () => { updateSettings({ highlightColor: c }); openSettings(); },
-      }))),
-    ),
-    h('div', { class: 'field' }, h('label', {}, 'Reader 1 (you) — words per minute'), wpm1),
-    h('div', { class: 'field' }, h('label', {}, 'Reader 2 (partner) — words per minute'), wpm2),
-    h('div', { class: 'row' },
-      h('button', {
-        class: 'stamp',
-        onclick: () => {
-          updateSettings({
-            reader1Wpm: Math.max(60, Number(wpm1.value) || 270),
-            reader2Wpm: Math.max(60, Number(wpm2.value) || 240),
-          });
-          closeOverlay(); renderAll();
-        },
-      }, 'Done'),
-    ),
+    tabsEl,
+    body,
     h('p', { class: 'note' }, 'Display settings never change your files — a saved .docx always carries exact Verbatim formatting.'),
     h('div', { class: 'legal' },
       h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
@@ -1007,6 +1541,7 @@ function openSettings(): void {
       h('span', {}, 'MIT license'),
     ),
   ));
+  render();
 }
 
 // --- overlay plumbing ---
@@ -1065,7 +1600,7 @@ const iconMoon = () => svgIcon('<path d="M13.5 8.8A6 6 0 1 1 7.2 2.5 4.7 4.7 0 0
 const iconFolder = () => svgIcon('<path d="M1.5 3.5h4L7 5h7.5v8h-13z"/>');
 const iconSave = () => svgIcon('<path d="M2.5 2.5h9l2 2v9h-11z"/><path d="M5 2.5v3.5h5V2.5M5 13.5V9h6v4.5"/>');
 const iconExport = () => svgIcon('<path d="M8 10V3M5 6l3-3 3 3M3 13h10"/>');
-const iconCycle = () => svgIcon('<path d="M3.5 6a5 5 0 0 1 8.6-1.9M12.5 10a5 5 0 0 1-8.6 1.9"/><path d="M12.5 1.8v2.7h-2.7M3.5 14.2v-2.7h2.7"/>');
+const iconPaste = () => svgIcon('<rect x="4" y="2.5" width="8" height="3" rx="1"/><path d="M4.5 4H3v10h10V4h-1.5"/><path d="M6 8h4M6 10.5h4"/>');
 const iconUndo = () => svgIcon('<path d="M3 6.5h7a3.5 3.5 0 0 1 0 7H8"/><path d="M6 3.5l-3 3 3 3"/>');
 const iconRedo = () => svgIcon('<path d="M13 6.5H6a3.5 3.5 0 0 0 0 7h2"/><path d="M10 3.5l3 3-3 3"/>');
 const iconSend = () => svgIcon('<path d="M3 3v4.5A3.5 3.5 0 0 0 6.5 11H13"/><path d="M10.5 8l3 3-3 3"/>');
@@ -1073,7 +1608,6 @@ const iconDown = () => svgIcon('<path d="M8 3v9M4.5 8.5L8 12l3.5-3.5"/>');
 const iconEye = () => svgIcon('<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>');
 const iconFind = () => svgIcon('<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/>');
 const iconBook = () => svgIcon('<path d="M8 3.5C6.5 2.5 4 2.5 2 3v10c2-.5 4.5-.5 6 .5 1.5-1 4-1 6-.5V3c-2-.5-4.5-.5-6 .5z"/><path d="M8 3.5v10"/>');
-const iconPanes = () => svgIcon('<rect x="2" y="3" width="12" height="10"/><path d="M6.5 3v10M10.5 3v10"/>');
 const iconKeys = () => svgIcon('<rect x="1.5" y="4" width="13" height="8" rx="1"/><path d="M4 7h.5M7 7h.5M10 7h.5M4.5 9.5h7"/>');
 const iconGear = () => svgIcon('<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>');
 const iconTimer = () => svgIcon('<circle cx="8" cy="9" r="5.5"/><path d="M8 9V6M6 1.5h4"/>');
@@ -1084,18 +1618,14 @@ const iconHome = () => svgIcon('<path d="M2.5 8L8 2.5 13.5 8"/><path d="M4 7v6.5
 // ---------------------------------------------------------------------------
 export function boot(): void {
   applyTheme(getSettings());
+  applyUserStyles();
   onSettingsChange((s) => {
     applyTheme(s);
-    // view mode / paper / toolbar changes need a re-render
+    applyUserStyles();
     const wrap = document.getElementById('docwrap');
     if (wrap) wrap.setAttribute('class', docwrapClass(s));
     view?.dom.setAttribute('spellcheck', String(s.spellcheck));
-    if (!showingHome) {
-      // ribbon visibility may change
-      const hasRibbon = !!document.querySelector('.ribbon');
-      if ((s.toolbar === 'full') !== hasRibbon) { syncActiveState(); renderAll(); }
-    }
-    updateCtx();
+    renderRibbonSwatches();
   });
 
   addEventListener('keydown', (e) => {
@@ -1104,16 +1634,17 @@ export function boot(): void {
     else if (mod && e.key.toLowerCase() === 's' && !e.shiftKey) { e.preventDefault(); void doSave(); }
     else if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void doSaveAs(); }
     else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); void openFile(); }
-    else if (mod && e.key.toLowerCase() === 'f' && !e.shiftKey && !showingHome) { e.preventDefault(); openFind(); }
-    else if (e.key === 'Escape') closeOverlay();
+    else if (mod && !e.shiftKey && e.key.toLowerCase() === 'f' && !showingHome) { e.preventDefault(); openFind(); }
+    else if (mod && e.key.toLowerCase() === 'h' && !showingHome) { e.preventDefault(); openFind(true); }
+    else if (mod && (e.key === '=' || e.key === '+') && !showingHome) { e.preventDefault(); zoomBy(10); }
+    else if (mod && e.key === '-' && !showingHome) { e.preventDefault(); zoomBy(-10); }
+    else if (e.key === 'Escape') { closePickers(); closeOverlay(); }
   });
 
   addEventListener('beforeunload', (e) => {
     syncActiveState();
     if (sessions.some((s) => s.dirty && !s.handle)) e.preventDefault();
   });
-
-  document.addEventListener('selectionchange', () => updateCtx());
 
   renderAll();
 
