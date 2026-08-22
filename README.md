@@ -2,7 +2,7 @@
 
 Spread is a free, open-source card-cutting editor for competitive debate. It reads and writes the same Verbatim-compatible Word .docx files your teammates already use, but it needs no Word license, no account, and no install — it runs in the browser, including on a school Chromebook. Your files stay on your machine. MIT licensed, free forever.
 
-**Try it:** https://YOURUSER.github.io/spread/ · **Desktop installers:** see [Releases](../../releases)
+**Try it:** https://wowneutral.github.io/spread/ · **Desktop installers:** see [Releases](../../releases)
 
 ## Why
 
@@ -43,7 +43,7 @@ Spread is the third option: MIT licensed, so anyone can use it, fork it, fix it,
 
 ### Web (recommended, works on Chromebooks)
 
-Open https://YOURUSER.github.io/spread/ in Chrome or Edge. That's it — the first-launch tutorial walks you through cutting a card. Install it as an app (browser menu → Install) for offline use.
+Open https://wowneutral.github.io/spread/ in Chrome or Edge. That's it — the first-launch tutorial walks you through cutting a card. Install it as an app (browser menu → Install) for offline use.
 
 Chrome and Edge get the full experience, including save-in-place and recents. Firefox and Safari work too, but saving downloads a copy instead of writing back to the original file.
 
