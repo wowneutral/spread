@@ -62,6 +62,7 @@ function marksToPM(m: RunMarks): Mark[] {
   if (m.underline) out.push(M.udirect.create());
   if (m.strike) out.push(M.strike.create());
   if (m.highlight && m.highlight !== 'none') out.push(M.highlight.create({ color: m.highlight }));
+  if (m.shd) out.push(M.shd.create({ hex: m.shd }));
   if (m.size !== undefined) out.push(M.size.create({ hp: m.size }));
   if (m.color) out.push(M.fcolor.create({ hex: m.color }));
   if (m.vertAlign) out.push(M.vert.create({ v: m.vertAlign }));
@@ -107,6 +108,7 @@ function pmMarksToModel(marks: readonly Mark[]): RunMarks {
       case M.udirect: out.underline = true; break;
       case M.strike: out.strike = true; break;
       case M.highlight: out.highlight = mark.attrs.color as HighlightColor; break;
+      case M.shd: out.shd = mark.attrs.hex; break;
       case M.size: out.size = Number(mark.attrs.hp); break;
       case M.fcolor: out.color = mark.attrs.hex; break;
       case M.vert: out.vertAlign = mark.attrs.v; break;

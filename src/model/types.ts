@@ -29,6 +29,8 @@ export interface RunMarks {
   underline?: boolean;     // direct w:u (single); style-underline lives in charStyle
   strike?: boolean;
   highlight?: HighlightColor;
+  /** Background shading fill (w:shd) as RRGGBB hex — independent of highlight. */
+  shd?: string;
   /** Font size in half-points (w:sz). 16 = the 8pt "minimized" convention. */
   size?: number;
   /** Font color as RRGGBB hex (w:color), 'auto' preserved as-is. */

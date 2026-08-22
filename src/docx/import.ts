@@ -143,6 +143,11 @@ function importRun(rNode: any, link: string | undefined): Run | null {
           break;
         case 'w:highlight':
           marks.highlight = a['w:val'] as HighlightColor; break;
+        case 'w:shd': {
+          const fill = a['w:fill'];
+          if (fill && fill !== 'auto') marks.shd = fill;
+          break;
+        }
         case 'w:sz': marks.size = Number(a['w:val']); break;
         case 'w:color': marks.color = a['w:val']; break;
         case 'w:vertAlign':

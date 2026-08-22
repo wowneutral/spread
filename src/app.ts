@@ -15,7 +15,7 @@ import type { Node as PMNode } from 'prosemirror-model';
 
 import { schema } from './editor/schema';
 import { buildKeymap } from './editor/keymap';
-import { commands, toggleHighlight, selectCard } from './editor/commands';
+import { commands, toggleHighlight, toggleShade, selectCard } from './editor/commands';
 import { modelToPM, pmToModel, type EditorSession } from './editor/convert';
 import { importDocx } from './docx/import';
 import { exportDocx } from './docx/export';
@@ -75,6 +75,15 @@ let nextSessionId = 1;
 let view: EditorView | null = null;
 let showingHome = true;
 let autosaveTimer: number | undefined;
+let readMode = false;
+
+const REPO = 'https://github.com/wowneutral/spread';
+
+/** The browser tab reads as the open document, like any editor. */
+function updateTitle(): void {
+  const s = activeSession();
+  document.title = showingHome || !s ? 'Spread' : `${s.name.replace(/\.docx$/i, '')} — Spread`;
+}
 
 function activeSession(): Session | null {
   return sessions.find((s) => s.id === activeId) ?? null;
@@ -87,7 +96,10 @@ function makeState(doc: PMNode): EditorState {
   return EditorState.create({
     doc,
     plugins: [
-      buildKeymap({ getHighlightColor: () => getSettings().highlightColor }),
+      buildKeymap({
+        getHighlightColor: () => getSettings().highlightColor,
+        getShadeHex: () => getSettings().shadeHex,
+      }),
       history(),
       keymap(baseKeymap),
       new Plugin({
@@ -164,7 +176,7 @@ async function doSave(s: Session | null = activeSession()): Promise<void> {
       void addRecent({ name: s.name, openedAt: Date.now(), handle });
     }
     s.dirty = false;
-    renderTopbar(); renderStatus();
+    renderTopbar(); renderStatus(); updateTitle();
     toast(s.handle ? `Saved ${s.name}` : `Downloaded ${s.name}`);
   } catch (e) {
     toast(`Save failed: ${(e as Error).message}`);
@@ -234,6 +246,7 @@ function renderAll(): void {
   );
   if (!showingHome) mountEditor();
   renderStatus();
+  updateTitle();
 }
 
 // --- topbar ---
@@ -350,6 +363,17 @@ function renderHome(): HTMLElement {
             h('p', {}, 'Serverless card sharing between teammates, free forever.')),
         ),
       ),
+      h('div', { class: 'home-foot' },
+        h('span', {}, 'Spread is free and open source. Your files never leave your computer.'),
+        h('span', { class: 'grow', style: 'flex:1' }),
+        h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
+        '·',
+        h('a', { href: `${REPO}/blob/main/PRIVACY.md`, target: '_blank', rel: 'noopener' }, 'Privacy'),
+        '·',
+        h('a', { href: `${REPO}/blob/main/TERMS.md`, target: '_blank', rel: 'noopener' }, 'Terms'),
+        '·',
+        h('a', { href: `${REPO}/releases`, target: '_blank', rel: 'noopener' }, 'Mac & Windows apps'),
+      ),
     ),
   );
 }
@@ -376,11 +400,15 @@ function timeAgo(ts: number): string {
 }
 
 // --- editor shell ---
+function docwrapClass(s: Settings): string {
+  return `docwrap${s.docView === 'clean' ? ' clean' : ''}${s.docFollowsTheme ? '' : ' paper'}${readMode ? ' readmode' : ''}`;
+}
+
 function renderShell(): HTMLElement {
   const s = getSettings();
   return h('div', { class: 'shell' },
     h('nav', { class: 'outline', 'aria-label': 'Document outline', id: 'outline' }),
-    h('main', { class: `docwrap${s.docView === 'clean' ? ' clean' : ''}`, id: 'docwrap' },
+    h('main', { class: docwrapClass(s), id: 'docwrap' },
       h('div', { id: 'docmount', class: 'doczoom' }),
       h('div', { class: 'ctxbar', id: 'ctxbar', hidden: true }),
     ),
@@ -395,6 +423,8 @@ function mountEditor(): void {
   view?.destroy();
   view = new EditorView(mount, {
     state: s.state,
+    editable: () => !readMode,
+    attributes: () => ({ spellcheck: String(getSettings().spellcheck) }),
     dispatchTransaction(tr) {
       if (!view) return;
       const newState = view.state.apply(tr);
@@ -515,6 +545,79 @@ function buildCtxButtons(bar: HTMLElement): void {
   );
 }
 
+// --- read mode ---
+function toggleReadMode(): void {
+  readMode = !readMode;
+  const s = getSettings();
+  document.getElementById('docwrap')?.setAttribute('class', docwrapClass(s));
+  view?.setProps({ editable: () => !readMode });
+  if (s.toolbar === 'full' && !showingHome) document.querySelector('.ribbon')?.replaceWith(renderRibbon());
+  toast(readMode ? 'Read mode — the doc shows only what gets read; editing is off.' : 'Read mode off');
+}
+
+// --- find ---
+function closeFind(): void {
+  document.getElementById('findbar')?.remove();
+  view?.focus();
+}
+
+function openFind(): void {
+  if (showingHome || !view) return;
+  document.getElementById('findbar')?.remove();
+  const wrap = document.getElementById('docwrap');
+  if (!wrap) return;
+
+  let matches: { from: number; to: number }[] = [];
+  let idx = -1;
+  const count = h('span', { class: 'fcount' }, '');
+
+  const collect = (query: string) => {
+    matches = [];
+    idx = -1;
+    if (!view || query.length === 0) { count.textContent = ''; return; }
+    const q = query.toLowerCase();
+    view.state.doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return true;
+      const hay = node.text.toLowerCase();
+      let at = hay.indexOf(q);
+      while (at >= 0) {
+        matches.push({ from: pos + at, to: pos + at + q.length });
+        at = hay.indexOf(q, at + Math.max(1, q.length));
+      }
+      return false;
+    });
+    count.textContent = matches.length === 0 ? '0' : `${matches.length}`;
+  };
+
+  const jump = (delta: number) => {
+    if (!view || matches.length === 0) return;
+    idx = (idx + delta + matches.length) % matches.length;
+    const m = matches[idx];
+    if (m.to > view.state.doc.content.size) { collect(input.value); return; }
+    view.dispatch(view.state.tr
+      .setSelection(TextSelection.create(view.state.doc, m.from, m.to))
+      .scrollIntoView());
+    count.textContent = `${idx + 1}/${matches.length}`;
+  };
+
+  const input = h('input', {
+    type: 'text', placeholder: 'Find in document…', 'aria-label': 'Find',
+    oninput: () => collect(input.value),
+    onkeydown: (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); collect(input.value); jump(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.stopPropagation(); closeFind(); }
+    },
+  });
+  const bar = h('div', { class: 'findbar', id: 'findbar' },
+    input, count,
+    h('button', { title: 'Previous (Shift-Enter)', 'aria-label': 'Previous match', onclick: () => jump(-1) }, '‹'),
+    h('button', { title: 'Next (Enter)', 'aria-label': 'Next match', onclick: () => jump(1) }, '›'),
+    h('button', { title: 'Close (Esc)', 'aria-label': 'Close find', onclick: () => closeFind() }, '×'),
+  );
+  wrap.prepend(bar);
+  input.focus();
+}
+
 // --- full ribbon (optional) ---
 interface RibbonBtn { label?: string; kbd?: string; icon?: () => SVGElement; glyph?: string;
   cls?: string; title: string; run?: () => void; soon?: string }
@@ -547,16 +650,20 @@ function renderRibbon(): HTMLElement {
       { label: 'Underline', kbd: 'F9', title: 'Underline style', run: run(commands.underlineStyle) },
       { label: 'Emphasis', kbd: 'F10', title: 'Emphasis style', run: run(commands.emphasis) },
       { label: 'Clear', kbd: 'F12', title: 'Clear formatting', run: run(commands.clear) },
+      { label: 'Condense', kbd: 'F3', title: 'Condense — merge the card body into one paragraph', run: run(commands.condense) },
+      { label: 'Case', kbd: '⇧F3', title: 'Cycle case: lower → UPPER → Title', run: run(commands.toggleCase) },
     ],
     [
       { glyph: 'A', cls: 'cbar', title: 'Highlight (F11) — active color', run: () => { if (view) { toggleHighlight(getSettings().highlightColor)(view.state, view.dispatch); view.focus(); } } },
       { glyph: 'x²', title: 'Superscript', run: run(commands.superscript) },
-      { glyph: 'A−', title: 'Shrink un-underlined (Mod-8)', run: run(commands.shrink) },
+      { glyph: 'A', cls: 'cbar shade', title: 'Background color (Mod-F11)', run: () => { if (view) { toggleShade(getSettings().shadeHex)(view.state, view.dispatch); view.focus(); } } },
       { glyph: 'x₂', title: 'Subscript', run: run(commands.subscript) },
+      { glyph: 'A−', title: 'Shrink un-underlined (Mod-8)', run: run(commands.shrink) },
+      { glyph: 'Aa', title: 'Toggle case (Shift-F3)', run: run(commands.toggleCase) },
     ],
     [
-      { icon: iconEye, title: 'Read mode', soon: 'Read mode' },
-      { icon: iconComment, title: 'Comments', soon: 'Comments' },
+      { icon: iconEye, cls: readMode ? 'on' : undefined, title: 'Read mode — show only what gets read', run: () => toggleReadMode() },
+      { icon: iconFind, title: 'Find (Mod-F)', run: () => openFind() },
       { icon: iconBook, title: 'Flashcards', soon: 'Flashcards' },
       { icon: iconPanes, title: 'Three-pane view', soon: 'Multi-pane' },
     ],
@@ -573,7 +680,7 @@ function renderRibbon(): HTMLElement {
     onclick: b.run ?? (() => toast(`${b.soon} is on the roadmap — not in v0.1 yet.`)),
   },
     b.icon ? b.icon() : null,
-    b.glyph ? h('span', { class: `glyph${b.cls === 'cbar' ? ' cbar' : ''}` }, b.glyph) : null,
+    b.glyph ? h('span', { class: `glyph${b.cls?.includes('cbar') ? ` ${b.cls}` : ''}` }, b.glyph) : null,
     b.label ?? null,
     b.kbd ? h('kbd', {}, b.kbd) : null,
   );
@@ -747,6 +854,11 @@ function paletteItems(): PaletteItem[] {
     { label: 'Highlight', hint: 'F11', run: () => { if (view) { toggleHighlight(getSettings().highlightColor)(view.state, view.dispatch); view.focus(); } } },
     { label: 'Clear formatting', hint: 'F12', run: run(commands.clear) },
     { label: 'Shrink un-underlined text', hint: '⌘8', run: run(commands.shrink) },
+    { label: 'Condense card', hint: 'F3', run: run(commands.condense) },
+    { label: 'Toggle case (lower / UPPER / Title)', hint: '⇧F3', run: run(commands.toggleCase) },
+    { label: 'Background color', hint: '⌘F11', run: () => { if (view) { toggleShade(getSettings().shadeHex)(view.state, view.dispatch); view.focus(); } } },
+    { label: 'Read mode', run: () => toggleReadMode() },
+    { label: 'Find in document', hint: '⌘F', run: () => openFind() },
     { label: 'Select card', run: run(commands.selectCard) },
     { label: 'Send to speech doc', run: () => sendToSpeech() },
     { label: 'Mark this tab as speech doc', run: () => { const s = activeSession(); if (s) { for (const o of sessions) o.isSpeech = false; s.isSpeech = true; renderAll(); } } },
@@ -854,8 +966,13 @@ function openSettings(): void {
       (v) => updateSettings({ theme: v as Settings['theme'] })),
     optRow('Document view', [['clean', 'Clean (better formatting)'], ['faithful', 'Faithful (exact Verbatim)']], s.docView,
       (v) => updateSettings({ docView: v as Settings['docView'] })),
-    optRow('Toolbar', [['contextual', 'Contextual + palette'], ['full', 'Full toolbar']], s.toolbar,
+    optRow('Toolbar', [['full', 'Full toolbar'], ['contextual', 'Contextual + palette']], s.toolbar,
       (v) => updateSettings({ toolbar: v as Settings['toolbar'] })),
+    optRow('Dark mode and the page', [['paper', 'Page stays white'], ['themed', 'Theme colors the page']],
+      s.docFollowsTheme ? 'themed' : 'paper',
+      (v) => updateSettings({ docFollowsTheme: v === 'themed' })),
+    optRow('Spellcheck', [['off', 'Off'], ['on', 'On']], s.spellcheck ? 'on' : 'off',
+      (v) => updateSettings({ spellcheck: v === 'on' })),
     h('div', { class: 'field' },
       h('label', {}, 'Highlight color (F11)'),
       h('div', { class: 'swrow' }, ...HL_COLORS.map((c) => h('button', {
@@ -880,6 +997,15 @@ function openSettings(): void {
       }, 'Done'),
     ),
     h('p', { class: 'note' }, 'Display settings never change your files — a saved .docx always carries exact Verbatim formatting.'),
+    h('div', { class: 'legal' },
+      h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
+      '·',
+      h('a', { href: `${REPO}/blob/main/PRIVACY.md`, target: '_blank', rel: 'noopener' }, 'Privacy Policy'),
+      '·',
+      h('a', { href: `${REPO}/blob/main/TERMS.md`, target: '_blank', rel: 'noopener' }, 'Terms of Use'),
+      '·',
+      h('span', {}, 'MIT license'),
+    ),
   ));
 }
 
@@ -945,7 +1071,7 @@ const iconRedo = () => svgIcon('<path d="M13 6.5H6a3.5 3.5 0 0 0 0 7h2"/><path d
 const iconSend = () => svgIcon('<path d="M3 3v4.5A3.5 3.5 0 0 0 6.5 11H13"/><path d="M10.5 8l3 3-3 3"/>');
 const iconDown = () => svgIcon('<path d="M8 3v9M4.5 8.5L8 12l3.5-3.5"/>');
 const iconEye = () => svgIcon('<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>');
-const iconComment = () => svgIcon('<path d="M2 3h12v8H7l-3 3v-3H2z"/>');
+const iconFind = () => svgIcon('<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/>');
 const iconBook = () => svgIcon('<path d="M8 3.5C6.5 2.5 4 2.5 2 3v10c2-.5 4.5-.5 6 .5 1.5-1 4-1 6-.5V3c-2-.5-4.5-.5-6 .5z"/><path d="M8 3.5v10"/>');
 const iconPanes = () => svgIcon('<rect x="2" y="3" width="12" height="10"/><path d="M6.5 3v10M10.5 3v10"/>');
 const iconKeys = () => svgIcon('<rect x="1.5" y="4" width="13" height="8" rx="1"/><path d="M4 7h.5M7 7h.5M10 7h.5M4.5 9.5h7"/>');
@@ -960,9 +1086,10 @@ export function boot(): void {
   applyTheme(getSettings());
   onSettingsChange((s) => {
     applyTheme(s);
-    // view mode / toolbar changes need a re-render
+    // view mode / paper / toolbar changes need a re-render
     const wrap = document.getElementById('docwrap');
-    if (wrap) wrap.classList.toggle('clean', s.docView === 'clean');
+    if (wrap) wrap.setAttribute('class', docwrapClass(s));
+    view?.dom.setAttribute('spellcheck', String(s.spellcheck));
     if (!showingHome) {
       // ribbon visibility may change
       const hasRibbon = !!document.querySelector('.ribbon');
@@ -977,6 +1104,7 @@ export function boot(): void {
     else if (mod && e.key.toLowerCase() === 's' && !e.shiftKey) { e.preventDefault(); void doSave(); }
     else if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); void doSaveAs(); }
     else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); void openFile(); }
+    else if (mod && e.key.toLowerCase() === 'f' && !e.shiftKey && !showingHome) { e.preventDefault(); openFind(); }
     else if (e.key === 'Escape') closeOverlay();
   });
 

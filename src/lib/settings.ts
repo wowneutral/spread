@@ -6,8 +6,11 @@
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   docView: 'clean' | 'faithful';
-  toolbar: 'contextual' | 'full';   // slim contextual toolbar (default) or the full ribbon
+  toolbar: 'contextual' | 'full';   // full top bar (default, like Verbatim/CardMirror) or slim contextual
+  docFollowsTheme: boolean;         // dark mode darkens the document too (off = paper stays white)
+  spellcheck: boolean;              // browser spellcheck in the editor (off: evidence trips it)
   highlightColor: string;           // active F11 color (Word highlight name)
+  shadeHex: string;                 // Mod-F11 background shading fill (RRGGBB)
   reader1Wpm: number;
   reader2Wpm: number;
   showReadChips: boolean;           // per-card read time chips (off by default)
@@ -19,9 +22,12 @@ export interface Settings {
 
 export const DEFAULTS: Settings = {
   theme: 'system',
-  docView: 'clean',
-  toolbar: 'contextual',
+  docView: 'faithful',
+  toolbar: 'full',
+  docFollowsTheme: false,
+  spellcheck: false,
   highlightColor: 'cyan',
+  shadeHex: 'FFE9A8',
   reader1Wpm: 270,
   reader2Wpm: 240,
   showReadChips: false,

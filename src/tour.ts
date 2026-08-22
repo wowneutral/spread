@@ -135,9 +135,9 @@ export function startTour(api: TourApi): void {
       target: () => rectOf('.speech') ?? rectOf('.status'),
     },
     {
-      title: 'Everything is in the palette',
-      body: `${mod}-K. Every command, searchable. Select text and a small toolbar appears too. If you want buttons for everything, Settings has a full toolbar mode.`,
-      target: () => rectOf('.topbar-right'),
+      title: 'Every command, two ways',
+      body: `The toolbar up top has a button for everything, keys labeled. ${mod}-K opens the command palette — type what you want instead of hunting for it.`,
+      target: () => rectOf('.ribbon') ?? rectOf('.topbar-right'),
     },
     {
       title: 'That is the whole job',

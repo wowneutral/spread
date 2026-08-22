@@ -95,6 +95,13 @@ export const schema = new Schema({
         },
       }],
     },
+    shd: {
+      attrs: { hex: {} },  // w:shd fill as RRGGBB
+      toDOM(mark) {
+        return ['span', { class: 'm-shd', style: `background-color:#${mark.attrs.hex}` }, 0];
+      },
+      parseDOM: [],
+    },
     size: {
       attrs: { hp: {} },  // half-points
       toDOM(mark) { return ['span', { class: 'm-size', style: `font-size:${Number(mark.attrs.hp) / 2}pt` }, 0]; },

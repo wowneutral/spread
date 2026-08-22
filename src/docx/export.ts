@@ -108,6 +108,7 @@ function exportRun(r: Run): any {
     rPrKids.push(el('w:szCs', [], { 'w:val': String(m.size) }));
   }
   if (m.highlight && m.highlight !== 'none') rPrKids.push(el('w:highlight', [], { 'w:val': m.highlight }));
+  if (m.shd) rPrKids.push(el('w:shd', [], { 'w:val': 'clear', 'w:color': 'auto', 'w:fill': m.shd }));
   if (m.vertAlign) rPrKids.push(el('w:vertAlign', [], { 'w:val': m.vertAlign }));
   if (r.rawRPr) {
     // Re-emit unmodeled props, skipping any that would duplicate modeled ones.

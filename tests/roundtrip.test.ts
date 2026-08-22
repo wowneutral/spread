@@ -155,4 +155,22 @@ describe('new documents', () => {
     expect(styles).toContain('w:styleId="Heading1"');
     expect(styles).toContain('Pocket');
   });
+
+  it('background shading (w:shd) survives export and re-import', () => {
+    const parts = newDocumentParts();
+    const model: DocModel = { blocks: [], rels: new Map() };
+    model.blocks.push(
+      { type: 'p', para: { kind: 'para', styleId: 'Normal', runs: [
+        { text: 'plain ', marks: {} },
+        { text: 'shaded', marks: { shd: 'FFE9A8' } },
+        { text: ' shaded and highlighted', marks: { shd: 'FFE9A8', highlight: 'cyan' } },
+      ] } },
+    );
+    const out = exportDocx(model, parts);
+    const back = importDocx(out);
+    expect(normalize(back.model)).toEqual(normalize(model));
+    const runs = back.model.blocks[0].type === 'p' ? back.model.blocks[0].para.runs : [];
+    expect(runs.find((r) => r.text === 'shaded')?.marks.shd).toBe('FFE9A8');
+    expect(runs.find((r) => r.text === ' shaded and highlighted')?.marks.highlight).toBe('cyan');
+  });
 });

@@ -151,6 +151,7 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .rb .cbar::after{content:""; position:absolute; left:0; right:0; bottom:-3px;
   height:3px; border-radius:1px; background:var(--hl-cyan)}
 .rb .cbar.fc::after{background:#C0392B}
+.rb .cbar.shade::after{background:#FFE9A8; border:1px solid var(--line-strong)}
 
 /* ---------- shell ---------- */
 .shell{flex:1; display:flex; min-height:0; gap:12px; padding:2px 12px 4px}
@@ -202,27 +203,31 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
   flex:1; min-width:0; overflow-y:auto; background:var(--doc-ground);
   position:relative; border-radius:14px; box-shadow:var(--shadow-sm);
 }
+/* The page stays paper — dark mode darkens the app chrome, not your document.
+   (Settings → "Theme colors the document" opts back in.) */
+.docwrap.paper{--doc-ground:#FFFFFF; --doc-ink:#161513}
 .doczoom{transform-origin:top left}
 .ProseMirror{outline:none; caret-color:var(--doc-ink); white-space:pre-wrap}
 /* Inside the document, selection must never look like a highlight — neutral blue. */
 .ProseMirror ::selection{background:rgba(62,98,168,.32); color:inherit}
 .ProseMirror::selection{background:rgba(62,98,168,.32)}
 .doc, .ProseMirror{
-  margin:0; padding:34px 44px 40vh; color:var(--doc-ink);
-  font-family:"Tinos","Times New Roman",Times,serif; font-size:15px; line-height:1.4;
+  margin:0; padding:34pt 44pt 40vh; color:var(--doc-ink);
+  font-family:Calibri,"Helvetica Neue",Arial,system-ui,sans-serif;
+  font-size:11pt; line-height:1.25;
   min-height:100%;
 }
-/* Faithful (Verbatim-exact) rendering */
+/* Faithful (Verbatim-exact) rendering — sizes in pt, exactly what Word shows. */
 .cs-h1{
-  font-size:26px; font-weight:700; text-align:center;
-  border:1.5px solid var(--doc-ink); padding:10px 16px; margin:0 0 14px;
+  font-size:26pt; font-weight:700; text-align:center;
+  border:1pt solid var(--doc-ink); padding:6pt 10pt; margin:0 0 10pt;
 }
-.cs-h2{font-size:22px; font-weight:700; text-align:center; text-decoration:underline double; margin:28px 0 10px}
-.cs-h3{font-size:16px; font-weight:700; text-align:center; text-decoration:underline; margin:20px 0 10px}
-.cs-h4{font-size:15px; font-weight:700; margin:14px 0 2px; text-align:left; text-decoration:none}
-.cs-p{margin:0 0 8px; font-size:11px; line-height:1.5}
+.cs-h2{font-size:22pt; font-weight:700; text-align:center; text-decoration:underline double; margin:18pt 0 8pt}
+.cs-h3{font-size:16pt; font-weight:700; text-align:center; text-decoration:underline; margin:14pt 0 8pt}
+.cs-h4{font-size:13pt; font-weight:700; margin:10pt 0 2pt; text-align:left; text-decoration:none}
+.cs-p{margin:0 0 6pt; font-size:11pt; line-height:1.25; color:var(--doc-ink)}
 .m-cite{font-size:13pt; font-weight:700}
-.m-ustyle{font-size:11pt; text-decoration:underline; text-underline-offset:2px}
+.m-ustyle{text-decoration:underline; text-underline-offset:2px}
 .m-emph{font-weight:700; text-decoration:underline; text-underline-offset:2px}
 .m-u{text-decoration:underline; text-underline-offset:2px}
 .m-boldoff{font-weight:400}
@@ -236,32 +241,65 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .hl-darkRed{background:var(--hl-darkRed); color:#fff} .hl-darkYellow{background:var(--hl-darkYellow); color:#fff}
 .hl-darkGray{background:var(--hl-darkGray)} .hl-lightGray{background:var(--hl-lightGray)}
 .hl-black{background:var(--hl-black); color:#fff} .hl-white{background:var(--hl-white)}
+/* Background shading (w:shd) — fill color is inline; keep the text readable. */
+.m-shd{color:#161513; box-decoration-break:clone; -webkit-box-decoration-break:clone}
 .cs-raw{
   border:1px dashed var(--line-strong); border-radius:4px; color:var(--muted);
   font-family:"Archivo",sans-serif; font-size:11.5px; padding:8px 10px; margin:8px 0;
   user-select:none;
 }
 
-/* Clean view — display-only better formatting; files stay exact Verbatim */
+/* Clean view — display-only better formatting; files stay exact Verbatim.
+   Real size marks still drive small text — nothing here fakes sizes. */
 .docwrap.clean .ProseMirror{
   max-width:78ch; margin:0 auto; padding:44px 48px 40vh;
-  font-family:"Archivo",system-ui,sans-serif; font-size:14px; line-height:1.5;
+  font-family:"Archivo",system-ui,sans-serif; line-height:1.5;
 }
 .docwrap.clean .cs-h1{
-  border:none; text-align:left; font-size:21px; padding:0 0 8px;
+  border:none; text-align:left; font-size:21pt; padding:0 0 8px;
   border-bottom:2px solid var(--doc-ink); margin:0 0 6px;
 }
-.docwrap.clean .cs-h2{text-align:left; text-decoration:none; font-size:16.5px; margin:26px 0 4px}
+.docwrap.clean .cs-h2{text-align:left; text-decoration:none; font-size:16pt; margin:26px 0 4px}
 .docwrap.clean .cs-h3{
-  text-align:left; text-decoration:none; color:var(--muted); font-size:13.5px;
+  text-align:left; text-decoration:none; color:var(--muted); font-size:13pt;
   letter-spacing:.015em; margin:18px 0 12px;
 }
-.docwrap.clean .cs-h4{font-size:14.5px; margin:16px 0 4px}
-.docwrap.clean .cs-p{color:var(--muted); font-size:10.5px; line-height:1.6; margin:0 0 10px}
-.docwrap.clean .m-cite{font-size:14px; color:var(--doc-ink)}
-.docwrap.clean .m-ustyle{font-size:14px; color:var(--doc-ink); text-underline-offset:2.5px}
-.docwrap.clean .m-emph{color:var(--doc-ink)}
+.docwrap.clean .cs-h4{font-size:12pt; margin:16px 0 4px}
+.docwrap.clean .cs-p{line-height:1.55; margin:0 0 10px}
+.docwrap.clean .m-ustyle{text-underline-offset:2.5px}
 .docwrap.clean .m-hl{border-radius:2px; padding:0 2px}
+
+/* Read mode — only what gets read out loud: headings, cites, highlights.
+   Everything else collapses; the doc becomes a speech script. */
+.docwrap.readmode .cs-p{font-size:0 !important; line-height:1.3}
+.docwrap.readmode .cs-p .m-cite,
+.docwrap.readmode .cs-p .m-cite *{font-size:13pt !important}
+.docwrap.readmode .cs-p .m-hl,
+.docwrap.readmode .cs-p .m-hl *{font-size:11pt !important}
+.docwrap.readmode .cs-raw{display:none}
+
+/* ---------- find bar ---------- */
+.findbar{
+  position:sticky; top:8px; z-index:25; margin:0 12px 0 auto; width:min(380px, 80%);
+  display:flex; align-items:center; gap:6px;
+  background:var(--card); border-radius:10px; box-shadow:var(--shadow);
+  padding:6px 8px;
+}
+.findbar input{
+  flex:1; min-width:0; font:inherit; font-size:13px; color:var(--ink);
+  background:var(--ground); border:1px solid var(--line); border-radius:6px;
+  padding:5px 9px; outline:none;
+}
+.findbar input:focus{border-color:var(--line-strong)}
+.findbar .fcount{
+  font-family:"Spline Sans Mono",monospace; font-size:10.5px; color:var(--faint);
+  white-space:nowrap; padding:0 2px;
+}
+.findbar button{
+  width:24px; height:24px; border-radius:5px; display:grid; place-items:center;
+  color:var(--muted); font-size:13px;
+}
+.findbar button:hover{background:var(--panel-2); color:var(--ink)}
 
 /* ---------- contextual toolbar ---------- */
 .ctxbar{
@@ -331,6 +369,20 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .modal .stamp:hover{opacity:.88}
 .modal .note{font-size:11.5px; color:var(--faint); line-height:1.5; margin-top:4px}
 .modal .swrow{display:flex; gap:6px; flex-wrap:wrap}
+.modal .legal{
+  display:flex; gap:6px; align-items:baseline; flex-wrap:wrap;
+  margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
+  font-size:11.5px; color:var(--faint);
+}
+.modal .legal a{color:var(--muted); text-decoration:underline; text-underline-offset:2px}
+.modal .legal a:hover{color:var(--ink)}
+.home-foot{
+  margin-top:44px; padding-top:14px; border-top:1px solid var(--line);
+  display:flex; gap:6px; align-items:baseline; flex-wrap:wrap;
+  font-size:11.5px; color:var(--faint);
+}
+.home-foot a{color:var(--muted); text-decoration:underline; text-underline-offset:2px}
+.home-foot a:hover{color:var(--ink)}
 .modal .sw{width:26px; height:20px; border-radius:3px; border:1px solid var(--line-strong)}
 .modal .sw.on{outline:2px solid var(--ink); outline-offset:1px}
 

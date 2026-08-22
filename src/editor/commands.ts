@@ -149,6 +149,116 @@ export const selectCard: Command = (state, dispatch) => {
   return true;
 };
 
+/**
+ * F3 / Condense: merge the card's body paragraphs into one paragraph.
+ * With a multi-paragraph selection, condenses the selection instead.
+ */
+export const condense: Command = (state, dispatch) => {
+  const doc = state.doc;
+  let { from, to } = state.selection;
+  if (state.selection.empty) {
+    // Card region: from below the nearest heading to the next heading/raw block.
+    const $from = state.selection.$from;
+    let index = $from.index(0);
+    while (index > 0 && doc.child(index).type !== schema.nodes.heading) index--;
+    let start = doc.child(index).type === schema.nodes.heading ? index + 1 : index;
+    let end = start;
+    while (end + 1 < doc.childCount) {
+      const next = doc.child(end + 1);
+      if (next.type === schema.nodes.heading || next.type === schema.nodes.rawblock) break;
+      end++;
+    }
+    if (start >= doc.childCount || end < start) return false;
+    let pos = 0;
+    for (let i = 0; i < start; i++) pos += doc.child(i).nodeSize;
+    from = pos + 1;
+    for (let i = start; i <= end; i++) pos += doc.child(i).nodeSize;
+    to = pos - 1;
+  }
+  // Collect join points (boundaries between adjacent paragraphs inside range).
+  const joins: number[] = [];
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type !== schema.nodes.paragraph) return true;
+    const after = pos + node.nodeSize;
+    if (after < to) {
+      const $after = doc.resolve(after);
+      if ($after.nodeAfter?.type === schema.nodes.paragraph) joins.push(after);
+    }
+    return false;
+  });
+  if (joins.length === 0) return false;
+  if (dispatch) {
+    let tr = state.tr;
+    for (const pos of [...joins].reverse()) {
+      // Join, then keep the seam readable with a single space.
+      const mapped = tr.mapping.map(pos);
+      tr = tr.join(mapped);
+      const seam = mapped - 1;
+      const $seam = tr.doc.resolve(seam);
+      const before = $seam.nodeBefore, afterN = $seam.nodeAfter;
+      if (before?.isText && afterN?.isText && !/\s$/.test(before.text ?? '') && !/^\s/.test(afterN.text ?? '')) {
+        tr = tr.insertText(' ', seam);
+      }
+    }
+    dispatch(tr.scrollIntoView());
+  }
+  return true;
+};
+
+/** Shift-F3: cycle selection case — lowercase → UPPERCASE → Title Case. */
+export const toggleCase: Command = (state, dispatch) => {
+  const { from, to } = state.selection.empty ? wordRange(state) : state.selection;
+  if (from === to) return false;
+  const current = state.doc.textBetween(from, to, ' ');
+  const mode: 'upper' | 'title' | 'lower' =
+    current === current.toLowerCase() ? 'upper'
+    : current === current.toUpperCase() ? 'title'
+    : 'lower';
+  const transform = (t: string, offset: number): string => {
+    if (mode === 'upper') return t.toUpperCase();
+    if (mode === 'lower') return t.toLowerCase();
+    // Title-case using document context so word starts split across runs work.
+    let out = '';
+    for (let k = 0; k < t.length; k++) {
+      const prev = offset + k === 0 ? ' ' : (state.doc.textBetween(from + offset + k - 1, from + offset + k, ' ') || ' ');
+      const ch = t[k].toLowerCase();
+      out += /[\s([{"'‘“/-]/.test(prev) ? ch.toUpperCase() : ch;
+    }
+    return out;
+  };
+  if (dispatch) {
+    const segs: { a: number; b: number; text: string; marks: readonly import('prosemirror-model').Mark[] }[] = [];
+    state.doc.nodesBetween(from, to, (node, pos) => {
+      if (!node.isText || !node.text) return true;
+      const a = Math.max(from, pos), b = Math.min(to, pos + node.nodeSize);
+      if (a >= b) return false;
+      segs.push({ a, b, text: node.text.slice(a - pos, b - pos), marks: node.marks });
+      return false;
+    });
+    let tr = state.tr;
+    for (const seg of [...segs].reverse()) {
+      tr = tr.replaceWith(seg.a, seg.b, schema.text(transform(seg.text, seg.a - from), seg.marks.slice()));
+    }
+    dispatch(tr.scrollIntoView());
+  }
+  return true;
+};
+
+/** Mod-F11: background shading (w:shd fill) — independent of highlight. */
+export function toggleShade(hex: string): Command {
+  return (state, dispatch) => {
+    const { from, to } = wordRange(state);
+    if (from === to) return false;
+    const type = schema.marks.shd;
+    const has = rangeHasMark(state, from, to, type);
+    if (dispatch) {
+      const tr = has ? state.tr.removeMark(from, to, type) : state.tr.addMark(from, to, type.create({ hex }));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+}
+
 // Named command handles for palette/toolbar/keymap reuse.
 export const commands = {
   pocket: setLevel(1),
@@ -167,4 +277,6 @@ export const commands = {
   clear: clearFormatting,
   shrink: shrinkSelection(),
   selectCard,
+  condense,
+  toggleCase,
 };
