@@ -703,6 +703,45 @@ function renderOutline(): void {
 // --- the flow ---
 const flowStore = loadFlows();
 let flowSaveTimer: number | undefined;
+let flowFocus = { r: 0, c: 0 };
+
+/** Bold/strike the selected cell from the toolbar (keyboard: ⌘B / ⌘D). */
+function toggleFlowFmt(kind: 'bold' | 'struck'): void {
+  const f = activeFlow();
+  const cell = f?.grid[flowFocus.r]?.[flowFocus.c];
+  if (!f || !cell) return;
+  cell[kind] = !cell[kind];
+  const el = document.querySelector(`.fcell[data-rc="${flowFocus.r}:${flowFocus.c}"]`);
+  el?.classList.toggle(kind === 'bold' ? 'b' : 's', !!cell[kind]);
+  saveFlows(flowStore);
+  focusFlowCell(flowFocus.r, flowFocus.c);
+}
+
+function flowCSV(flow: Flow): string {
+  const esc = (t: string) => `"${t.replace(/"/g, '""')}"`;
+  return [
+    flow.cols.map(esc).join(','),
+    ...flow.grid.map((row) => row.map((c) => esc(c.text)).join(',')),
+  ].join('\r\n');
+}
+
+/** Print / save-as-PDF: a clean table of the whole flow, nothing else. */
+function printFlow(flow: Flow): void {
+  document.getElementById('printflow')?.remove();
+  const table = h('table', {},
+    h('thead', {}, h('tr', {}, ...flow.cols.map((c) => h('th', {}, c)))),
+    h('tbody', {}, ...flow.grid
+      .filter((row) => row.some((c) => c.text.trim() !== ''))
+      .map((row) => h('tr', {}, ...row.map((c) =>
+        h('td', { class: `${c.bold ? 'b ' : ''}${c.struck ? 's' : ''}` }, c.text))))),
+  );
+  const wrap = h('div', { id: 'printflow' }, h('h1', {}, flow.name), table);
+  document.body.append(wrap);
+  const done = () => { wrap.remove(); removeEventListener('afterprint', done); };
+  addEventListener('afterprint', done);
+  window.print();
+  setTimeout(done, 1500);
+}
 
 function activeFlow(): Flow | null {
   return flowStore.flows.find((f) => f.id === flowStore.activeId) ?? null;
@@ -768,6 +807,7 @@ function renderFlowGrid(flow: Flow): HTMLElement {
         spellcheck: 'false',
       }, cell.text);
       el.oninput = () => { cell.text = el.textContent ?? ''; scheduleFlowSave(); };
+      el.onfocus = () => { flowFocus = { r, c }; };
       el.onblur = () => { clearTimeout(flowSaveTimer); saveFlows(flowStore); };
       el.onkeydown = (e: KeyboardEvent) => {
         const mod = e.metaKey || e.ctrlKey;
@@ -892,20 +932,30 @@ function renderFlowView(): HTMLElement {
     },
   });
 
+  const safeName = () => flow.name.replace(/[^\w.-]+/g, '_');
+  const exportMenu = () => menuList([
+    { label: 'Print / save as PDF', hint: 'the whole flow', run: () => printFlow(flow) },
+    { label: 'CSV — opens in any spreadsheet', run: () => downloadText(`${safeName()}.csv`, flowCSV(flow), 'text/csv') },
+    { label: 'JSON — reopens in Spread', run: () => downloadText(`${safeName()}.flow.json`, exportFlowJSON(flow)) },
+  ]);
+
+  const noSteal = (e: Event) => e.preventDefault(); // keep the cell focused
   const main = h('main', { class: 'flow-main', id: 'flowmain' },
     h('div', { class: 'flow-head' },
       renameInput,
       h('span', { class: 'flow-evtag' }, flow.event),
       h('div', { class: 'flow-tools' },
-        h('button', { title: 'Bold cell (⌘B)', onclick: () => { /* keyboard-first; hint */ toast('Select a cell and press Mod-B.'); } }, 'B'),
-        h('button', { title: 'Strike cell (⌘D)', class: 'st', onclick: () => toast('Select a cell and press Mod-D.') }, 'S'),
+        h('button', { title: 'Bold the selected cell (⌘B)', onmousedown: noSteal, onclick: () => toggleFlowFmt('bold') }, 'B'),
+        h('button', { title: 'Strike the selected cell (⌘D)', class: 'st', onmousedown: noSteal, onclick: () => toggleFlowFmt('struck') }, 'S'),
         h('span', { class: 'sep' }),
         h('button', { onclick: () => { const f = activeFlow(); if (f) { insertRow(f, f.grid.length); scheduleFlowSave(); rerenderFlow(); } } }, '+ Row'),
-        h('button', { onclick: () => downloadText(`${flow.name.replace(/[^\w.-]+/g, '_')}.flow.json`, exportFlowJSON(flow)) }, 'Export'),
+        h('button', { onclick: (e: Event) => openPicker(e.currentTarget as HTMLElement, exportMenu()) }, 'Export ▾'),
         h('button', { onclick: () => importInput.click() }, 'Import'),
         importInput,
+        h('span', { class: 'sep' }),
+        h('button', { title: 'Home', 'aria-label': 'Home', onclick: () => { showingFlow = false; showingHome = true; renderAll(); } }, iconHome()),
       ),
-      h('span', { class: 'flow-hint' }, 'Enter argument · ⌥Enter above · ⇧Enter response · ⌘B bold · ⌘D strike'),
+      h('span', { class: 'flow-hint' }, 'keys · Enter argument · ⌥Enter above · ⇧Enter response'),
     ),
     renderFlowGrid(flow),
   );
@@ -940,7 +990,7 @@ function sendTagToFlow(): void {
 }
 
 // --- WPM test ---
-const WPM_PASSAGE = 'The strongest version of any argument is the one your opponent would write. Before a tournament, read your own cards the way a judge hears them, out loud and at pace, because the words that look clean on a screen can trip a reader mid sentence. Evidence wins rounds when the highlighted line says exactly what the tag promises, no more and no less. A card that needs three sentences of spin is a card that should have been cut better. Practice the transitions between cards as much as the cards themselves, since hesitation between arguments costs more time than slow reading inside them. Speed matters, but a judge who misses a warrant gives it no weight, so the real target is the fastest rate at which every word still lands.';
+const WPM_PASSAGE = 'The strongest version of any argument is the one your opponent would write. Before a tournament, read your own cards the way a judge hears them, out loud and at pace, because the words that look clean on a screen can trip a reader mid sentence. Evidence wins rounds when the highlighted line says exactly what the tag promises, no more and no less. A card that needs three sentences of spin is a card that should have been cut better. Practice the transitions between cards as much as the cards themselves, since hesitation between arguments costs more time than slow reading inside them. Speed matters, but a judge who misses a warrant gives it no weight, so the real target is the fastest rate at which every word still lands. The same discipline applies to the rebuttal. A dropped argument is only dangerous if the other side extends it cleanly, so listen for what they actually said instead of what their block was supposed to say. Number your answers, signpost before each one, and finish the sentence you started even when the timer is against you, because a judge flows complete thoughts and forgets fragments. When you practice, record nothing and grade nothing; just read the same two minutes of material three times in a row and notice where your mouth stumbles. Those stumbles are almost never about speed. They are about words you chose in the library that your voice has never met. Rewrite them once, read it again, and the pace takes care of itself. Clarity is not the opposite of speed; it is what makes speed worth having in the first place.';
 
 let wpmHandle: number | null = null;
 let wpmStart = 0;

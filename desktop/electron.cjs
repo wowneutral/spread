@@ -25,8 +25,21 @@ function createWindow() {
     },
   });
 
-  // Open target="_blank" / window.open links in the system browser.
+  // The pop-out timer (#timer) opens as a small always-on-top window;
+  // every other target="_blank" / window.open goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.includes('#timer')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 340,
+          height: 330,
+          alwaysOnTop: true,
+          backgroundColor: BG,
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+        },
+      };
+    }
     if (isExternal(url)) shell.openExternal(url);
     return { action: 'deny' };
   });

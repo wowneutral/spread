@@ -422,8 +422,8 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
   margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
   font-size:11.5px; color:var(--faint);
 }
-.modal .legal a{color:var(--muted); text-decoration:underline; text-underline-offset:2px}
-.modal .legal a:hover{color:var(--ink)}
+.modal .legal a{color:var(--muted); text-decoration:none}
+.modal .legal a:hover{color:var(--ink); text-decoration:underline; text-underline-offset:2px}
 .home-foot{
   margin-top:44px; padding-top:14px; border-top:1px solid var(--line);
   display:flex; gap:6px; align-items:baseline; flex-wrap:wrap;
@@ -523,14 +523,14 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .h2-a-main span{font-size:11.5px; color:var(--muted)}
 .h2-action kbd{font-family:"Spline Sans Mono",monospace; font-size:10px; color:var(--faint);
   background:var(--panel-2); border-radius:3px; padding:2px 6px}
-.h2-links{display:flex; align-items:baseline; gap:8px; font-size:12.5px}
-.h2-links button{color:var(--muted); text-decoration:underline; text-underline-offset:2px}
+.h2-links{display:flex; align-items:baseline; gap:8px; font-size:12.5px; flex-wrap:wrap}
+.h2-links button{color:var(--muted); white-space:nowrap}
 .h2-links button:hover{color:var(--ink)}
 .h2-links .sep{color:var(--faint)}
 .h2-foot{margin-top:auto; padding:16px 0 10px; display:flex; gap:6px; align-items:baseline;
   flex-wrap:wrap; font-size:11px; color:var(--faint)}
-.h2-foot a{color:var(--muted); text-decoration:underline; text-underline-offset:2px}
-.h2-foot a:hover{color:var(--ink)}
+.h2-foot a{color:var(--muted); text-decoration:none; white-space:nowrap}
+.h2-foot a:hover{color:var(--ink); text-decoration:underline; text-underline-offset:2px}
 .h2-right{
   background:var(--card); border-radius:14px; box-shadow:var(--shadow-sm);
   display:flex; flex-direction:column; min-height:0; padding:14px 14px 10px;
@@ -632,8 +632,22 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .flow-tools button:hover{background:var(--panel-2); color:var(--ink)}
 .flow-tools .st{text-decoration:line-through}
 .flow-tools .sep{width:1px; height:16px; background:var(--line); margin:0 4px}
-.flow-hint{margin-left:auto; font-size:10.5px; color:var(--faint);
-  font-family:"Spline Sans Mono",monospace}
+.flow-hint{margin-left:auto; font-size:10px; color:var(--faint); opacity:.75; font-style:italic}
+
+/* Print / save-as-PDF: only the flow table prints. */
+#printflow{display:none}
+@media print{
+  body > *:not(#printflow){display:none !important}
+  #printflow{display:block; color:#000}
+  #printflow h1{font-size:16pt; margin:0 0 10pt; font-family:Arial,sans-serif}
+  #printflow table{width:100%; border-collapse:collapse; table-layout:fixed;
+    font-family:Arial,sans-serif; font-size:9pt}
+  #printflow th{border-bottom:1.5pt solid #000; text-align:left; padding:3pt 5pt; font-size:8.5pt;
+    text-transform:uppercase; letter-spacing:.05em}
+  #printflow td{border:0.5pt solid #999; vertical-align:top; padding:3pt 5pt; word-wrap:break-word}
+  #printflow td.b{font-weight:700}
+  #printflow td.s{text-decoration:line-through; color:#666}
+}
 .flow-grid{
   flex:1; overflow:auto; display:grid; align-content:start;
   gap:0 14px; padding:12px 14px 40vh; min-height:0;
