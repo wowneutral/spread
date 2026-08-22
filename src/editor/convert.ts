@@ -55,7 +55,11 @@ function paraToPM(p: Paragraph, session: EditorSession): PMNode {
     pprIdx = session.rawPPrs.length;
     session.rawPPrs.push(p.rawPPr);
   }
-  const layout = { indent: p.indent ?? 0, align: p.align ?? null, pprIdx };
+  const layout = {
+    indent: p.indent ?? 0, align: p.align ?? null,
+    sb: p.dispBeforePt ?? null, sa: p.dispAfterPt ?? null, ln: p.dispLine ?? null,
+    pprIdx,
+  };
   if (p.kind === 'heading' && p.level) {
     return schema.nodes.heading.create({ level: p.level, ...layout }, inline);
   }

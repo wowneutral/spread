@@ -59,6 +59,14 @@ export interface Paragraph {
   align?: 'left' | 'center' | 'right' | 'both';
   /** Left indent (w:ind w:left) in twips, when it is the only indent prop. */
   indent?: number;
+  /**
+   * Display-only paragraph spacing read from this paragraph's own w:spacing.
+   * The original node stays in rawPPr (so export is untouched); these fields
+   * let the editor render the file's true density like Word does.
+   */
+  dispBeforePt?: number;
+  dispAfterPt?: number;
+  dispLine?: number;
   runs: Run[];
   /** Original <w:pPr> children minus pStyle, re-emitted opaquely on export. */
   rawPPr?: XmlNode[];

@@ -1,5 +1,7 @@
 import 'prosemirror-view/style/prosemirror.css';
 import './styles.css';
-import { boot } from './app';
+import { boot, bootTimer } from './app';
 
-boot();
+// #timer opens the standalone pop-out timer window; anything else is the app.
+if (location.hash === '#timer') bootTimer();
+else boot();

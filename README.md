@@ -102,7 +102,15 @@ What's next, in no particular order. Everything stays free.
 - Formatting Spread doesn't model passes through untouched — open and save a file and unknown run properties, tables, section settings, and the rest come out exactly as they went in. Tables are preserved but not yet editable in the editor.
 - Known v0.1 limit: images inside text paragraphs are not preserved when that paragraph is edited. Keep image-heavy files in Word for now.
 
+## Feedback
+
+Bug reports and feature requests: [GitHub issues](https://github.com/wowneutral/spread/issues), or email hello@mitez.org.
+
+Next up on the roadmap: a built-in flowing tool — fluid, keyboard-first, made for round speed.
+
 ## Credits
+
+Spread is made by **Armaan Seth**.
 
 - **Verbatim**, by Aaron Hardy / Ashtar Communications (GPL), defined the conventions this entire space runs on — the styles, the F-keys, send-to-speech, all of it. Spread interoperates with its file format and is grateful for two decades of groundwork.
 - **ProseMirror**, by Marijn Haverbeke, is the editor toolkit underneath.

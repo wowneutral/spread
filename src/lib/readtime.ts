@@ -1,9 +1,8 @@
 /**
- * Read-time model, CardMirror-status-bar compatible:
- * "Doc: N · Reader 1: M:SS · Reader 2: M:SS" where N counts the words you
- * would actually read aloud — underlined (style or direct), highlighted,
- * emphasized, cite-styled runs, and tag/heading text. Shrunk un-underlined
- * body text does not count.
+ * Read-time model, CardMirror-compatible: read-aloud content is tags and
+ * headings, cites, analytics, and highlighted text. Underlined-but-not-
+ * highlighted text is context you skip in round, so it does not count —
+ * this matches CardMirror's Doc number exactly.
  */
 import type { Node as PMNode } from 'prosemirror-model';
 import { schema } from '../editor/schema';
@@ -26,10 +25,7 @@ export function readableWords(doc: PMNode): number {
     }
     if (node.isText && node.text) {
       const marks = node.marks;
-      const readable =
-        M.ustyle.isInSet(marks) || M.udirect.isInSet(marks) ||
-        M.highlight.isInSet(marks) || M.emph.isInSet(marks) ||
-        M.cite.isInSet(marks);
+      const readable = M.highlight.isInSet(marks) || M.cite.isInSet(marks);
       if (readable) words += countWords(node.text);
     }
     return true;
@@ -50,9 +46,7 @@ export function readableWordsInSelection(doc: PMNode, from: number, to: number):
         (parent?.type === schema.nodes.paragraph && parent.attrs.kind === 'analytic');
       const marks = node.marks;
       const readable = inHeading ||
-        M.ustyle.isInSet(marks) || M.udirect.isInSet(marks) ||
-        M.highlight.isInSet(marks) || M.emph.isInSet(marks) ||
-        M.cite.isInSet(marks);
+        M.highlight.isInSet(marks) || M.cite.isInSet(marks);
       if (readable) words += countWords(text);
     }
     return true;

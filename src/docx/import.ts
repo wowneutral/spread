@@ -77,6 +77,9 @@ function importParagraph(pNode: any, rels: Map<string, string>, mkId: () => stri
   let styleId: string | undefined;
   let align: Paragraph['align'];
   let indent: number | undefined;
+  let dispBeforePt: number | undefined;
+  let dispAfterPt: number | undefined;
+  let dispLine: number | undefined;
   const rawPPr: any[] = [];
   if (pPr) {
     for (const c of children(pPr)) {
@@ -86,6 +89,16 @@ function importParagraph(pNode: any, rels: Map<string, string>, mkId: () => stri
         const v = attrs(c)['w:val'];
         if (v === 'left' || v === 'center' || v === 'right' || v === 'both') align = v;
         else rawPPr.push(c);
+      } else if (name === 'w:spacing') {
+        // Display-only: read the paragraph's own spacing, keep the node raw
+        // so export re-emits it byte-faithfully.
+        const a = attrs(c);
+        if (a['w:before'] !== undefined) dispBeforePt = Number(a['w:before']) / 20;
+        if (a['w:after'] !== undefined) dispAfterPt = Number(a['w:after']) / 20;
+        if (a['w:line'] !== undefined && (a['w:lineRule'] === 'auto' || a['w:lineRule'] === undefined)) {
+          dispLine = Number(a['w:line']) / 240;
+        }
+        rawPPr.push(c);
       } else if (name === 'w:ind') {
         // Model the plain left indent; anything richer stays raw.
         const a = attrs(c);
@@ -104,6 +117,9 @@ function importParagraph(pNode: any, rels: Map<string, string>, mkId: () => stri
     styleId,
     align,
     indent,
+    dispBeforePt,
+    dispAfterPt,
+    dispLine,
     runs: [],
     rawPPr: rawPPr.length ? rawPPr : undefined,
     id: mkId(),

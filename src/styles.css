@@ -48,13 +48,13 @@
   --shadow-sm:0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.28);
 }
 
-/* Word's highlight palette — vivid with black text in BOTH themes,
-   exactly how a cut card reads. */
+/* Word's highlight palette — the exact hexes Word renders, identical in both
+   themes, so a card looks the same here, in CardMirror, and in Word. */
 :root{
-  --hl-yellow:#FFF200; --hl-green:#00E52B; --hl-cyan:#00E5EE; --hl-magenta:#FF3FD1;
-  --hl-blue:#3E63FF; --hl-red:#FF2E2E; --hl-darkBlue:#0000A8; --hl-darkCyan:#008B9C;
-  --hl-darkGreen:#0D7A22; --hl-darkMagenta:#8B1E8B; --hl-darkRed:#9C1010;
-  --hl-darkYellow:#8B8B00; --hl-darkGray:#808080; --hl-lightGray:#C9C9C9;
+  --hl-yellow:#FFFF00; --hl-green:#00FF00; --hl-cyan:#00FFFF; --hl-magenta:#FF00FF;
+  --hl-blue:#0000FF; --hl-red:#FF0000; --hl-darkBlue:#00008B; --hl-darkCyan:#008B8B;
+  --hl-darkGreen:#006400; --hl-darkMagenta:#8B008B; --hl-darkRed:#8B0000;
+  --hl-darkYellow:#808000; --hl-darkGray:#808080; --hl-lightGray:#C0C0C0;
   --hl-black:#000000; --hl-white:#FFFFFF; --hl-ink:#000000;
 }
 
@@ -254,7 +254,7 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .m-u{text-decoration:underline; text-underline-offset:2px}
 .m-boldoff{font-weight:400}
 .m-link{color:#0563C1; text-decoration:underline}
-.m-hl{color:var(--hl-ink); padding:0 1px; box-decoration-break:clone; -webkit-box-decoration-break:clone}
+.m-hl{color:var(--hl-ink); box-decoration-break:slice; -webkit-box-decoration-break:slice}
 .hl-yellow{background:var(--hl-yellow)} .hl-green{background:var(--hl-green)}
 .hl-cyan{background:var(--hl-cyan)} .hl-magenta{background:var(--hl-magenta)}
 .hl-blue{background:var(--hl-blue); color:#fff} .hl-red{background:var(--hl-red); color:#fff}
@@ -579,6 +579,47 @@ button{font:inherit; color:inherit; background:none; border:none; cursor:pointer
 .tour-arrow.next{font-size:14px}
 .tour-skip{font-size:11.5px; color:var(--faint)}
 .tour-skip:hover{color:var(--ink)}
+
+/* ---------- timer panel (in-app + pop-out) ---------- */
+.timerpanel{
+  position:fixed; right:16px; bottom:44px; z-index:120; width:300px;
+  background:var(--card); border-radius:14px; box-shadow:var(--shadow);
+  padding:12px 14px 14px;
+}
+.timerpanel.standalone{position:static; width:auto; box-shadow:none; border-radius:0}
+body.timerwin{overflow:hidden}
+body.timerwin #app{height:100%; background:var(--card)}
+.tp-head{display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+.tp-head .tp-pop{margin-left:auto; color:var(--faint); font-size:14px; padding:2px 6px; border-radius:4px}
+.tp-head .tp-x{color:var(--faint); font-size:15px; padding:2px 6px; border-radius:4px}
+.tp-head button:hover{color:var(--ink); background:var(--panel-2)}
+.tp-row{padding:8px 0 10px; border-top:1px solid var(--line)}
+.tp-top{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:2px}
+.tp-label{font-size:10px; font-weight:700; letter-spacing:.12em; color:var(--faint)}
+.tp-mode{font-size:10.5px; color:var(--muted); text-decoration:underline; text-underline-offset:2px}
+.tp-mode:hover{color:var(--ink)}
+.tp-main{display:flex; align-items:center; justify-content:space-between; gap:10px}
+.tp-time{
+  font-family:"Spline Sans Mono",monospace; font-size:34px; font-weight:600;
+  font-variant-numeric:tabular-nums; color:var(--ink);
+}
+.tp-time.running{color:var(--ok)}
+.tp-time.done{color:var(--err)}
+.tp-ctl{display:flex; align-items:center; gap:5px}
+.tp-set{
+  width:56px; padding:5px 6px; font-family:"Spline Sans Mono",monospace; font-size:12px;
+  text-align:center; color:var(--ink); background:var(--ground);
+  border:1px solid var(--line); border-radius:6px;
+}
+.tp-set:disabled{opacity:.4}
+.tp-go{
+  width:34px; height:30px; border-radius:7px; background:var(--stamp); color:var(--stamp-text);
+  font-size:12px; display:grid; place-items:center;
+}
+.tp-go:hover{opacity:.88}
+.tp-reset{width:28px; height:30px; border-radius:7px; color:var(--muted); display:grid; place-items:center}
+.tp-reset:hover{background:var(--panel-2); color:var(--ink)}
 
 /* ---------- toasts ---------- */
 .toasts{position:fixed; bottom:44px; left:50%; transform:translateX(-50%);

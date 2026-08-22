@@ -126,7 +126,7 @@ export function startTour(api: TourApi): void {
     },
     {
       title: 'Read times',
-      body: `Doc counts only the words you would say out loud: tags, cites, underlines, highlights. Reader 1 and Reader 2 turn that into minutes at your speed and your partner's. Speeds live in Settings.`,
+      body: `Doc counts only the words you would say out loud: tags, cites, analytics, highlights. Reader 1 and Reader 2 turn that into minutes at your speed and your partner's. Speeds live in Settings.`,
       target: () => rectOf('.status'),
     },
     {

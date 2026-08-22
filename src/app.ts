@@ -179,7 +179,9 @@ function makeState(doc: PMNode): EditorState {
 }
 
 function docCss(parts: PartMap): string {
-  return stylesheetCSS(parseStylesheet(partText(parts, 'word/styles.xml')), '#docmount');
+  return stylesheetCSS(
+    parseStylesheet(partText(parts, 'word/styles.xml'), partText(parts, 'word/theme/theme1.xml')),
+    '#docmount');
 }
 
 function newSession(name: string, model: DocModel, parts: PartMap, handle: FileSystemFileHandle | null): Session {
@@ -390,7 +392,6 @@ function renderAll(): void {
 
 // --- topbar ---
 function renderTopbarEl(): HTMLElement {
-  const s = getSettings();
   const bar = h('div', { class: 'topbar', id: 'topbar' },
     h('div', {
       class: 'wordmark', role: 'button', tabindex: '0', title: 'Home',
@@ -412,10 +413,10 @@ function renderTopbarEl(): HTMLElement {
       )),
     ),
     h('div', { class: 'topbar-right' },
-      h('button', {
-        class: 'chip-btn', title: 'Toggle document view',
-        onclick: () => { updateSettings({ docView: getSettings().docView === 'clean' ? 'faithful' : 'clean' }); },
-      }, 'View: ', h('b', {}, s.docView === 'clean' ? 'Clean' : 'Faithful')),
+      h('a', {
+        class: 'icon-btn', title: 'Spread on GitHub', 'aria-label': 'GitHub repository',
+        href: REPO, target: '_blank', rel: 'noopener',
+      }, iconGitHub()),
       h('button', { class: 'chip-btn', onclick: () => openPalette() },
         'Commands ', h('kbd', {}, navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl K')),
       h('button', {
@@ -475,14 +476,20 @@ function renderHome(): HTMLElement {
       h('div', { class: 'h2-links' },
         h('button', { onclick: () => openTutorial() }, 'Take the tour'),
         h('span', { class: 'sep' }, '·'),
-        h('button', { onclick: () => popoutTimer() }, 'Pop-out timer'),
+        h('button', { onclick: () => toggleTimerPanel() }, 'Timer'),
         h('span', { class: 'sep' }, '·'),
         h('button', { onclick: () => { openSettings('shortcuts'); } }, 'Shortcuts'),
       ),
       h('div', { class: 'h2-foot' },
+        h('span', {}, 'Made by Armaan Seth'),
+        '·',
         h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
         '·',
         h('a', { href: `${REPO}/releases`, target: '_blank', rel: 'noopener' }, 'Mac & Windows apps'),
+        '·',
+        h('a', { href: `${REPO}/issues`, target: '_blank', rel: 'noopener', title: 'Bug reports and feature requests — or email hello@mitez.org' }, 'Issues & suggestions'),
+        '·',
+        h('a', { href: 'mailto:hello@mitez.org' }, 'hello@mitez.org'),
         '·',
         h('a', { href: `${REPO}/blob/main/PRIVACY.md`, target: '_blank', rel: 'noopener' }, 'Privacy'),
         '·',
@@ -522,7 +529,7 @@ function timeAgo(ts: number): string {
 
 // --- editor shell ---
 function docwrapClass(s: Settings): string {
-  return `docwrap${s.docView === 'clean' ? ' clean' : ''}${s.docFollowsTheme ? '' : ' paper'}${readMode ? ' readmode' : ''}`;
+  return `docwrap${s.docFollowsTheme ? '' : ' paper'}${readMode ? ' readmode' : ''}`;
 }
 
 function renderShell(): HTMLElement {
@@ -916,12 +923,14 @@ function renderRibbon(): HTMLElement {
       { label: 'Card ▾', title: 'Card operations', menu: true, picker: () => cardMenu() },
     ],
     [
+      { glyph: 'B', cls: 'bld', k: 'bold', title: 'Bold (⌘B)', run: runCmd(commands.bold) },
       { glyph: 'x²', k: 'sup', title: 'Superscript', run: runCmd(commands.superscript) },
-      { glyph: 'S', cls: 'strike', k: 'strike', title: 'Strikethrough', run: runCmd(commands.strike) },
       { glyph: 'A−', title: 'Shrink un-underlined (⌘8)', run: runCmd(commands.shrink) },
+      { glyph: 'I', cls: 'ita', k: 'italic', title: 'Italic (⌘I)', run: runCmd(commands.italic) },
       { glyph: 'x₂', k: 'sub', title: 'Subscript', run: runCmd(commands.subscript) },
-      { glyph: '¶', title: 'Copy previous cite (Alt-F8)', run: runCmd(commands.copyPreviousCite) },
       { glyph: 'A+', title: 'Regrow — restore full size (⌘⇧8)', run: runCmd(commands.regrow) },
+      { glyph: 'S', cls: 'strike', k: 'strike', title: 'Strikethrough', run: runCmd(commands.strike) },
+      { glyph: '¶', title: 'Copy previous cite (Alt-F8)', run: runCmd(commands.copyPreviousCite) },
     ],
     [
       { icon: iconEye, k: 'read', title: 'Read mode — show only what gets read', run: () => toggleReadMode() },
@@ -933,7 +942,7 @@ function renderRibbon(): HTMLElement {
   const right: RibbonBtn[] = [
     { icon: iconKeys, title: 'Keyboard shortcuts', run: () => openSettings('shortcuts') },
     { icon: iconGear, title: 'Settings', run: () => openSettings() },
-    { icon: iconTimer, title: 'Pop-out timer', run: () => popoutTimer() },
+    { icon: iconTimer, title: 'Timer — speech & prep (pop-out inside)', run: () => toggleTimerPanel() },
     { icon: iconHome, title: 'Home', run: () => { syncActiveState(); showingHome = true; renderAll(); } },
   ];
   const btn = (b: RibbonBtn) => {
@@ -989,6 +998,8 @@ function updateRibbonState(): void {
   const vert = empty ? M.vert.isInSet(state.storedMarks ?? $from.marks()) : null;
   if (vert) { on.sup = vert.attrs.v === 'superscript'; on.sub = vert.attrs.v === 'subscript'; }
   on.strike = has(M.strike);
+  on.bold = has(M.bold);
+  on.italic = has(M.italic);
   document.querySelectorAll<HTMLElement>('.rb[data-k]').forEach((el) => {
     el.classList.toggle('on', !!on[el.dataset.k!]);
   });
@@ -1087,24 +1098,161 @@ function toggleTimer(): void {
   document.getElementById('speechTimer')?.classList.toggle('on', !!timerHandle);
 }
 
+// --- the round timer: speech + prep, each a timer or a stopwatch, any length ---
+interface Clock {
+  mode: 'timer' | 'stopwatch';
+  setSec: number;      // the configured length (timer mode)
+  cur: number;         // seconds remaining (timer) or elapsed (stopwatch)
+  running: boolean;
+  handle: number | null;
+}
+const clocks: Record<'speech' | 'prep', Clock> = {
+  speech: { mode: 'timer', setSec: 6 * 60, cur: 6 * 60, running: false, handle: null },
+  prep: { mode: 'timer', setSec: 4 * 60, cur: 4 * 60, running: false, handle: null },
+};
+
+function parseClockTime(text: string): number | null {
+  const m = /^(\d{1,3})(?::([0-5]?\d))?$/.exec(text.trim());
+  if (!m) return null;
+  // "630" keypad-style: last two digits are seconds. "6:30" is explicit.
+  if (m[2] !== undefined) return Number(m[1]) * 60 + Number(m[2]);
+  const digits = m[1];
+  if (digits.length <= 2) return Number(digits) * 60; // "6" -> 6:00
+  return Number(digits.slice(0, -2)) * 60 + Number(digits.slice(-2));
+}
+
+function clockText(c: Clock): string {
+  return fmtTime(Math.max(0, Math.round(c.cur)));
+}
+
+function refreshClockDisplays(): void {
+  for (const key of ['speech', 'prep'] as const) {
+    const c = clocks[key];
+    document.querySelectorAll<HTMLElement>(`[data-clock="${key}"]`).forEach((el) => {
+      el.textContent = clockText(c);
+      el.classList.toggle('done', c.mode === 'timer' && c.cur <= 0);
+      el.classList.toggle('running', c.running);
+    });
+    document.querySelectorAll<HTMLElement>(`[data-clockbtn="${key}"]`).forEach((el) => {
+      el.textContent = c.running ? '❚❚' : '▶';
+    });
+  }
+}
+
+function toggleClock(key: 'speech' | 'prep'): void {
+  const c = clocks[key];
+  if (c.running) {
+    if (c.handle) clearInterval(c.handle);
+    c.handle = null; c.running = false;
+  } else {
+    c.running = true;
+    c.handle = window.setInterval(() => {
+      if (c.mode === 'timer') {
+        c.cur = Math.max(0, c.cur - 1);
+        if (c.cur === 0 && c.handle) { clearInterval(c.handle); c.handle = null; c.running = false; }
+      } else {
+        c.cur += 1;
+      }
+      refreshClockDisplays();
+    }, 1000);
+  }
+  refreshClockDisplays();
+}
+
+function resetClock(key: 'speech' | 'prep'): void {
+  const c = clocks[key];
+  if (c.handle) clearInterval(c.handle);
+  c.handle = null; c.running = false;
+  c.cur = c.mode === 'timer' ? c.setSec : 0;
+  refreshClockDisplays();
+}
+
+function setClockMode(key: 'speech' | 'prep', mode: Clock['mode']): void {
+  const c = clocks[key];
+  c.mode = mode;
+  resetClock(key);
+}
+
+/** One clock row: label · big time · set-time input · mode · start · reset. */
+function clockRow(key: 'speech' | 'prep', label: string): HTMLElement {
+  const c = clocks[key];
+  const input = h('input', {
+    type: 'text', class: 'tp-set', value: fmtTime(c.setSec), 'aria-label': `${label} length`,
+    title: 'Length — 6:30, or keypad style: 630',
+    onchange: () => {
+      const sec = parseClockTime(input.value);
+      if (sec === null || sec <= 0) { input.value = fmtTime(c.setSec); return; }
+      c.setSec = sec;
+      input.value = fmtTime(sec);
+      resetClock(key);
+    },
+  });
+  const modeBtn = h('button', {
+    class: 'tp-mode', title: 'Switch between countdown timer and stopwatch',
+    onclick: () => {
+      setClockMode(key, c.mode === 'timer' ? 'stopwatch' : 'timer');
+      modeBtn.textContent = c.mode === 'timer' ? 'timer' : 'stopwatch';
+      input.disabled = c.mode === 'stopwatch';
+    },
+  }, c.mode === 'timer' ? 'timer' : 'stopwatch');
+  if (c.mode === 'stopwatch') (input as HTMLInputElement).disabled = true;
+  return h('div', { class: 'tp-row' },
+    h('div', { class: 'tp-top' },
+      h('span', { class: 'tp-label' }, label),
+      modeBtn,
+    ),
+    h('div', { class: 'tp-main' },
+      h('span', { class: `tp-time${c.running ? ' running' : ''}`, 'data-clock': key }, clockText(c)),
+      h('div', { class: 'tp-ctl' },
+        input,
+        h('button', { class: 'tp-go', 'data-clockbtn': key, 'aria-label': `Start or pause ${label}`, onclick: () => toggleClock(key) }, c.running ? '❚❚' : '▶'),
+        h('button', { class: 'tp-reset', 'aria-label': `Reset ${label}`, onclick: () => resetClock(key) }, '↺'),
+      ),
+    ),
+  );
+}
+
+function timerPanelContent(): HTMLElement {
+  return h('div', { class: 'tp-body' },
+    clockRow('speech', 'SPEECH'),
+    clockRow('prep', 'PREP'),
+  );
+}
+
+function toggleTimerPanel(): void {
+  const existing = document.getElementById('timerpanel');
+  if (existing) { existing.remove(); return; }
+  const panel = h('div', { class: 'timerpanel', id: 'timerpanel' },
+    h('div', { class: 'tp-head' },
+      h('span', {}, 'Timer'),
+      h('button', { class: 'tp-pop', title: 'Pop out into its own window', onclick: () => { popoutTimer(); } }, '⇱'),
+      h('button', { class: 'tp-x', title: 'Close', onclick: () => document.getElementById('timerpanel')?.remove() }, '×'),
+    ),
+    timerPanelContent(),
+  );
+  document.body.append(panel);
+  refreshClockDisplays();
+}
+
 function popoutTimer(): void {
-  const w = window.open('', 'spread-timer', 'width=260,height=140,alwaysOnTop=yes');
-  if (!w) { toast('Pop-up blocked — allow pop-ups for the timer window.'); return; }
-  w.document.write(`<!doctype html><title>Timer — Spread</title>
-  <body style="margin:0;display:grid;place-items:center;height:100vh;background:#1B1A17;color:#ECE8DD;font-family:ui-monospace,monospace">
-  <div style="text-align:center">
-    <div id=t style="font-size:44px;font-weight:600">8:00</div>
-    <div style="margin-top:6px">
-      <button onclick="go()" style="font:inherit;padding:4px 12px">start/stop</button>
-      <button onclick="reset()" style="font:inherit;padding:4px 12px">reset</button>
-    </div>
-  </div>
-  <script>
-    let r=480,h=null;const f=s=>Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
-    const d=()=>document.getElementById('t').textContent=f(r);
-    function go(){if(h){clearInterval(h);h=null}else h=setInterval(()=>{r=Math.max(0,r-1);d();if(!r&&h){clearInterval(h);h=null}},1000)}
-    function reset(){r=480;d()}
-  <\/script></body>`);
+  const url = `${location.href.split('#')[0]}#timer`;
+  const w = window.open(url, 'spread-timer', 'width=340,height=300');
+  if (!w) { toast('Pop-up blocked — allow pop-ups for this site to use the timer window.'); return; }
+  document.getElementById('timerpanel')?.remove();
+}
+
+/** Standalone timer window (#timer) — same clocks, tiny chrome. */
+export function bootTimer(): void {
+  document.title = 'Timer — Spread';
+  applyTheme(getSettings());
+  document.body.classList.add('timerwin');
+  root().replaceChildren(
+    h('div', { class: 'timerpanel standalone' },
+      h('div', { class: 'tp-head' }, h('span', {}, 'Spread timer')),
+      timerPanelContent(),
+    ),
+  );
+  refreshClockDisplays();
 }
 
 // --- status bar ---
@@ -1226,7 +1374,7 @@ function paletteItems(): PaletteItem[] {
     { label: 'Append to speech doc', hint: '⌥`', run: () => { sendToSpeech('end'); } },
     { label: 'Park in dropzone', hint: '⌘`', run: () => { sendToDropzone(); } },
     { label: 'Mark this tab as speech doc', run: () => { const s = activeSession(); if (s) { for (const o of sessions) o.isSpeech = false; s.isSpeech = true; renderAll(); } } },
-    { label: 'Toggle Clean / Faithful view', run: () => updateSettings({ docView: getSettings().docView === 'clean' ? 'faithful' : 'clean' }) },
+    { label: 'Timer panel (speech & prep)', run: () => toggleTimerPanel() },
     { label: 'Pop-out timer', run: () => popoutTimer() },
     { label: 'Take the tour', run: () => openTutorial() },
     { label: 'Keyboard shortcuts', run: () => openSettings('shortcuts') },
@@ -1406,9 +1554,6 @@ function openSettings(tab: SettingsTab = 'general'): void {
       return h('div', { class: 'field cfield' }, h('label', {}, label), input);
     };
     return [
-      optRow('Document view', [['faithful', 'Faithful (exact Verbatim)'], ['clean', 'Clean (display-only)']], s.docView,
-        (v) => updateSettings({ docView: v as Settings['docView'] }),
-        'Faithful renders the file with its own styles, the way Word shows it. Clean is a reading layout; files are identical either way.'),
       optRow('Dark mode and the page', [['paper', 'Page stays white'], ['themed', 'Theme colors the page']],
         s.docFollowsTheme ? 'themed' : 'paper',
         (v) => updateSettings({ docFollowsTheme: v === 'themed' })),
@@ -1532,7 +1677,13 @@ function openSettings(tab: SettingsTab = 'general'): void {
     body,
     h('p', { class: 'note' }, 'Display settings never change your files — a saved .docx always carries exact Verbatim formatting.'),
     h('div', { class: 'legal' },
+      h('span', {}, 'Made by Armaan Seth'),
+      '·',
       h('a', { href: REPO, target: '_blank', rel: 'noopener' }, 'GitHub'),
+      '·',
+      h('a', { href: `${REPO}/issues`, target: '_blank', rel: 'noopener' }, 'Issues & suggestions'),
+      '·',
+      h('a', { href: 'mailto:hello@mitez.org' }, 'hello@mitez.org'),
       '·',
       h('a', { href: `${REPO}/blob/main/PRIVACY.md`, target: '_blank', rel: 'noopener' }, 'Privacy Policy'),
       '·',
@@ -1597,6 +1748,7 @@ function svgIcon(paths: string): SVGElement {
   return svg;
 }
 const iconMoon = () => svgIcon('<path d="M13.5 8.8A6 6 0 1 1 7.2 2.5 4.7 4.7 0 0 0 13.5 8.8z"/>');
+const iconGitHub = () => svgIcon('<path d="M8 1.8a6.2 6.2 0 0 0-2 12.1c.3.06.42-.13.42-.3v-1.1c-1.72.37-2.08-.83-2.08-.83-.28-.72-.69-.91-.69-.91-.56-.38.04-.38.04-.38.62.05.95.64.95.64.55.95 1.45.67 1.8.51.06-.4.22-.67.4-.83-1.38-.15-2.82-.68-2.82-3.05 0-.67.24-1.22.63-1.65-.06-.16-.28-.79.06-1.64 0 0 .52-.17 1.7.63a5.9 5.9 0 0 1 3.1 0c1.18-.8 1.7-.63 1.7-.63.34.85.12 1.48.06 1.64.4.43.63.98.63 1.65 0 2.38-1.45 2.9-2.83 3.05.22.19.42.57.42 1.15v1.7c0 .17.11.36.42.3A6.2 6.2 0 0 0 8 1.8z"/>');
 const iconFolder = () => svgIcon('<path d="M1.5 3.5h4L7 5h7.5v8h-13z"/>');
 const iconSave = () => svgIcon('<path d="M2.5 2.5h9l2 2v9h-11z"/><path d="M5 2.5v3.5h5V2.5M5 13.5V9h6v4.5"/>');
 const iconExport = () => svgIcon('<path d="M8 10V3M5 6l3-3 3 3M3 13h10"/>');

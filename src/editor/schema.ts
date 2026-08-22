@@ -6,17 +6,24 @@
  */
 import { Schema } from 'prosemirror-model';
 
-/** Shared layout attrs → inline style (indent in twips; 20 twips = 1pt). */
-function layoutStyle(attrs: { indent: number; align: string | null }): string {
+/** Shared layout attrs → inline style (indent in twips; 20 twips = 1pt).
+ * sb/sa/ln are the paragraph's own spacing (display-only, from the file). */
+function layoutStyle(attrs: { indent: number; align: string | null; sb: number | null; sa: number | null; ln: number | null }): string {
   let s = '';
   if (attrs.indent > 0) s += `margin-left:${attrs.indent / 20}pt;`;
   if (attrs.align) s += `text-align:${attrs.align === 'both' ? 'justify' : attrs.align};`;
+  if (attrs.sb !== null) s += `margin-top:${attrs.sb}pt;`;
+  if (attrs.sa !== null) s += `margin-bottom:${attrs.sa}pt;`;
+  if (attrs.ln !== null) s += `line-height:${attrs.ln.toFixed(3)};`;
   return s;
 }
 
 const LAYOUT_ATTRS = {
   indent: { default: 0 },
   align: { default: null as string | null },
+  sb: { default: null as number | null },
+  sa: { default: null as number | null },
+  ln: { default: null as number | null },
   pprIdx: { default: -1 },   // index into the session's rawPPr registry
 };
 

@@ -28,10 +28,30 @@ export interface DocStylesheet {
   byId: Map<string, StyleRender>;
 }
 
+/** Theme fonts from word/theme/theme1.xml — the file's own minor/major faces. */
+export interface ThemeFonts { minor: string; major: string }
+
+export function parseThemeFonts(themeXml: string | null): ThemeFonts {
+  const fonts: ThemeFonts = { minor: 'Calibri', major: 'Calibri Light' };
+  if (!themeXml) return fonts;
+  // The theme part is large; a targeted scan beats a full parse.
+  const grab = (tag: string): string | undefined => {
+    const at = themeXml.indexOf(`<a:${tag}>`);
+    if (at < 0) return undefined;
+    const m = /<a:latin[^>]*typeface="([^"]*)"/.exec(themeXml.slice(at, at + 600));
+    return m?.[1] || undefined;
+  };
+  fonts.minor = grab('minorFont') ?? fonts.minor;
+  fonts.major = grab('majorFont') ?? fonts.major;
+  return fonts;
+}
+
+let activeTheme: ThemeFonts = { minor: 'Calibri', major: 'Calibri Light' };
+
 function themeFont(name: string | undefined): string | undefined {
   if (!name) return undefined;
-  if (name.startsWith('minor')) return 'Calibri';
-  if (name.startsWith('major')) return 'Calibri Light';
+  if (name.startsWith('minor')) return activeTheme.minor;
+  if (name.startsWith('major')) return activeTheme.major;
   return undefined;
 }
 
@@ -80,9 +100,10 @@ function parsePPr(pPr: any, out: StyleRender): void {
   }
 }
 
-export function parseStylesheet(stylesXml: string | null): DocStylesheet {
+export function parseStylesheet(stylesXml: string | null, themeXml: string | null = null): DocStylesheet {
+  activeTheme = parseThemeFonts(themeXml);
   const sheet: DocStylesheet = {
-    defaults: { font: 'Calibri', szHp: 22, afterPt: 8, line: 1.08 },
+    defaults: { font: activeTheme.minor, szHp: 22, afterPt: 8, line: 1.08 },
     byId: new Map(),
   };
   if (!stylesXml) return sheet;
