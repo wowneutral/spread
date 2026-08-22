@@ -1,0 +1,60 @@
+{
+  "name": "spread-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spread desktop wrapper (Electron)",
+  "license": "MIT",
+  "main": "electron.cjs",
+  "scripts": {
+    "start": "electron .",
+    "predist": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('../dist','dist',{recursive:true})\"",
+    "dist": "electron-builder --publish never"
+  },
+  "build": {
+    "appId": "app.spread",
+    "productName": "Spread",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron.cjs",
+      "dist/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns"
+    },
+    "dmg": {
+      "artifactName": "Spread-${version}-mac.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Spread-Setup-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  }
+}
