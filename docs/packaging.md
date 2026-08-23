@@ -61,15 +61,11 @@ Notes:
 
 ## Unsigned installers: first-launch instructions
 
-The builds are not code-signed (no Apple Developer / Windows cert). Users will see OS warnings once:
+The builds carry no Apple Developer / Windows certificate. Since v0.2.2 the macOS app is **ad-hoc signed** in CI (`desktop/adhoc-sign.cjs`, an electron-builder `afterPack` hook running `codesign --sign -`): without any signature, Apple Silicon Gatekeeper rejects the app as "damaged" with no user-visible way to allow it; with the ad-hoc seal, users get the standard unidentified-developer flow instead. Users still see OS warnings once:
 
-**macOS** — "Spread can't be opened because it is from an unidentified developer":
-- Right-click (or Ctrl-click) **Spread.app** → **Open** → **Open** in the dialog. Needed only on first launch.
-- If macOS says the app is "damaged" (Gatekeeper quarantine on newer macOS), clear the quarantine flag instead:
-
-  ```sh
-  xattr -cr /Applications/Spread.app
-  ```
+**macOS** — "Apple could not verify Spread is free of malware" / "unidentified developer":
+- Right-click (or Ctrl-click) **Spread.app** → **Open** → **Open**, or approve under **System Settings → Privacy & Security → Open Anyway**. Needed only on first launch.
+- A "damaged" dialog means a pre-v0.2.2 (unsigned) download — point the user at the current release.
 
 **Windows** — SmartScreen "Windows protected your PC":
 - Click **More info**, then **Run anyway**. Needed only on first run of the installer.

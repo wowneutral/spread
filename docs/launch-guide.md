@@ -80,7 +80,7 @@ For the next release: bump `"version"` in both `package.json` and `desktop/packa
 
 The installers work fine but are not code-signed, because signing requires paid certificates: an Apple Developer membership ($99/year) for macOS notarization and a code-signing certificate (a few hundred dollars/year) for Windows. Until donations cover those, users see a one-time OS warning. This is normal for new open-source projects — the exact wording to give users (it's already in the README):
 
-- **macOS:** "Spread can't be opened because it is from an unidentified developer." Right-click **Spread.app** → **Open** → **Open**. First launch only. If macOS says the app is "damaged", run `xattr -cr /Applications/Spread.app` in Terminal instead.
+- **macOS:** "Apple could not verify Spread is free of malware." Right-click **Spread.app** → **Open** → **Open**, or System Settings → Privacy & Security → **Open Anyway**. First launch only. If macOS says the app is "damaged", the download is from a release older than v0.2.2 — redownload the current one.
 - **Windows:** SmartScreen says "Windows protected your PC." Click **More info** → **Run anyway**. First run only.
 
 If someone is nervous, point them at the web version — it has no warnings and is the recommended way to run Spread anyway.

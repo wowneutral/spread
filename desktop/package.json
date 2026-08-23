@@ -1,6 +1,6 @@
 {
   "name": "spread-desktop",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "private": true,
   "description": "Spread desktop wrapper (Electron)",
   "license": "MIT",
@@ -13,6 +13,7 @@
   "build": {
     "appId": "app.spread",
     "productName": "Spread",
+    "afterPack": "./adhoc-sign.cjs",
     "directories": {
       "output": "release",
       "buildResources": "build"

@@ -53,11 +53,7 @@ Download the installer from [Releases](../../releases): `Spread-<version>-mac.dm
 
 The builds are not code-signed yet (certificates cost money; see the roadmap), so your OS will warn you once:
 
-- **macOS** — "Spread can't be opened because it is from an unidentified developer": right-click (or Ctrl-click) **Spread.app**, choose **Open**, then **Open** in the dialog. First launch only. If macOS instead says the app is "damaged", clear the quarantine flag:
-
-  ```sh
-  xattr -cr /Applications/Spread.app
-  ```
+- **macOS** — "Apple could not verify Spread is free of malware" / "unidentified developer": right-click (or Ctrl-click) **Spread.app**, choose **Open**, then **Open** in the dialog — or approve it under **System Settings → Privacy & Security → Open Anyway**. First launch only. If macOS instead calls the app "damaged", that download is from an older release: grab the current version from Releases (v0.2.2 or later), which fixes it.
 
 - **Windows** — SmartScreen "Windows protected your PC": click **More info**, then **Run anyway**. First run of the installer only.
 
