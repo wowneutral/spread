@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, shell } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog } = require('electron');
 const path = require('path');
 
 const DEV_URL = 'http://localhost:5173';
@@ -51,6 +51,21 @@ function createWindow() {
       event.preventDefault();
       shell.openExternal(url);
     }
+  });
+
+  // The page blocks unload when a document has unsaved changes. In a browser
+  // that shows a leave-site prompt; in Electron it would silently stop the
+  // window from closing and the app from quitting. Ask with a real dialog.
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Quit anyway', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'You have unsaved changes.',
+      detail: 'A document with unsaved changes is open. Quit anyway and lose those changes, or cancel and save first?',
+    });
+    if (choice === 0) event.preventDefault(); // proceed with close/quit
   });
 
   if (app.isPackaged) {

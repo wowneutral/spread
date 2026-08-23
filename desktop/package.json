@@ -26,7 +26,8 @@
         {
           "target": "dmg",
           "arch": [
-            "universal"
+            "arm64",
+            "x64"
           ]
         }
       ],
@@ -34,7 +35,7 @@
       "icon": "build/icon.icns"
     },
     "dmg": {
-      "artifactName": "Spread-${version}-mac.${ext}"
+      "artifactName": "Spread-${version}-mac-${arch}.${ext}"
     },
     "win": {
       "target": [
