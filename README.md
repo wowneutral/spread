@@ -1,7 +1,7 @@
 # Spread
 
 Spread is a free, open-source card-cutting editor for competitive debate. It reads and writes the same Verbatim-compatible Word .docx files your teammates already use, but it needs no Word license, no account, and no install — it runs in the browser, including on a school Chromebook. Your files stay on your machine. MIT licensed, free forever.
-
+Verbatim sucks :)
 **Try it:** https://YOURUSER.github.io/spread/ · **Desktop installers:** see [Releases](../../releases)
 
 ## Why
